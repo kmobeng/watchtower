@@ -66,8 +66,25 @@ model Monitor {
   failureThreshold Int        @default(3) @map("failure_threshold")
   createdAt        DateTime   @default(now()) @map("created_at")
   updatedAt        DateTime   @updatedAt @map("updated_at")
+  checks           Check[]
 
   @@unique([userId, url])
   @@index([userId])
   @@map("monitors")
+}
+
+model Check {
+  id             String   @id @default(uuid())
+  monitorId      String   @map("monitor_id")
+  monitor        Monitor  @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  checkedAt      DateTime @default(now()) @map("checked_at")
+  region         String   @default("local")
+  statusCode     Int?     @map("status_code")
+  responseTimeMs Int      @map("response_time_ms")
+  isUp           Boolean  @map("is_up")
+  timedOut       Boolean  @default(false) @map("timed_out")
+  error          String?
+
+  @@index([monitorId, checkedAt(sort: Desc)])
+  @@map("checks")
 }

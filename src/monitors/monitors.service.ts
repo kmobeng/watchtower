@@ -1,10 +1,13 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Monitor } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
+import { CheckSchedulerService } from '../checks/check-scheduler.service';
 import { CreateMonitorDto } from './dto/create-monitor.dto';
 import {
   MONITORS_DEFAULT_LIMIT,
@@ -23,15 +26,20 @@ export interface PaginatedMonitors {
 
 @Injectable()
 export class MonitorsService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(MonitorsService.name);
 
-  create(userId: string, dto: CreateMonitorDto): Promise<Monitor> {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly scheduler: CheckSchedulerService,
+  ) {}
+
+  async create(userId: string, dto: CreateMonitorDto): Promise<Monitor> {
     this.assertTimeoutWithinInterval(
       dto.intervalSeconds,
       dto.timeoutMs ?? 10000,
     );
 
-    return this.prisma.monitor.create({
+    const monitor = await this.prisma.monitor.create({
       data: {
         userId,
         url: dto.url,
@@ -40,6 +48,22 @@ export class MonitorsService {
         failureThreshold: dto.failureThreshold ?? 3,
       },
     });
+
+    try {
+      await this.scheduler.schedule(monitor);
+    } catch (error) {
+      // No silent dead monitors: roll back the row so a retry starts clean.
+      await this.prisma.monitor.delete({ where: { id: monitor.id } });
+      this.logger.error(
+        { monitorId: monitor.id, err: (error as Error)?.message },
+        'Check scheduling failed, monitor rolled back',
+      );
+      throw new ServiceUnavailableException(
+        'Monitor scheduling is temporarily unavailable. Please try again.',
+      );
+    }
+
+    return monitor;
   }
 
   async findAll(
@@ -106,7 +130,7 @@ export class MonitorsService {
       return existing;
     }
 
-    return this.prisma.monitor.update({
+    const updated = await this.prisma.monitor.update({
       where: { id: existing.id },
       data: {
         ...(dto.url !== undefined ? { url: dto.url } : {}),
@@ -119,6 +143,27 @@ export class MonitorsService {
           : {}),
       },
     });
+
+    // Only the interval affects the timer; other PATCHes leave it untouched so the schedule never resets or shifts phase.
+    if (
+      dto.intervalSeconds !== undefined &&
+      dto.intervalSeconds !== existing.intervalSeconds
+    ) {
+      try {
+        await this.scheduler.unschedule(existing.id);
+        await this.scheduler.schedule(updated);
+      } catch (error) {
+        this.logger.error(
+          { monitorId: existing.id, err: (error as Error)?.message },
+          'Check rescheduling failed, reconciler will heal it on next boot',
+        );
+        throw new ServiceUnavailableException(
+          'Monitor scheduling is temporarily unavailable. Please try again.',
+        );
+      }
+    }
+
+    return updated;
   }
 
   async remove(userId: string, id: string): Promise<void> {
@@ -128,6 +173,15 @@ export class MonitorsService {
 
     if (result.count === 0) {
       throw new NotFoundException('Monitor not found');
+    }
+
+    try {
+      await this.scheduler.unschedule(id);
+    } catch (error) {
+      this.logger.warn(
+        { monitorId: id, err: (error as Error)?.message },
+        'Check unscheduling failed after monitor delete',
+      );
     }
   }
 
