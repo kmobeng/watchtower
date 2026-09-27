@@ -92,6 +92,9 @@ export class TokenUtils {
   }
 
   generateRefreshToken(payload: RefreshJWTPayload): string {
+    // jti guarantees every refresh token is unique
+    payload.jti = randomUUID();
+
     const refreshToken = this.jwtService.sign(payload, {
       secret: this.configService.get('REFRESH_JWT_SECRET'),
       expiresIn: this.configService.get('REFRESH_JWT_EXPIRES_IN'),

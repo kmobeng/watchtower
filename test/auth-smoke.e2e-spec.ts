@@ -47,11 +47,9 @@ describe('Auth smoke (live Postgres + Redis)', () => {
     expect(reg.body.success).toBe(true);
     expect(reg.body.token).toBeDefined();
 
-    // NOTE: live-auction refresh JWTs carry only {sub}+iat (1s granularity),
-    // so register->login inside the same second yields an identical token and
-    // hits RefreshToken.token unique. Delay to cross a second boundary.
-    await new Promise((r) => setTimeout(r, 1200));
-
+    // Regression proof for the refresh-token uniqueness fix: register->login
+    // runs same-second on purpose. Before the jti fix this 500'd on
+    // RefreshToken.token unique (P2002).
     const login = await agent
       .post('/api/v1/auth/login')
       .send({ email, password })

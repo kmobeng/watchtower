@@ -78,13 +78,26 @@ describe('TokenUtils', () => {
   });
 
   describe('refresh tokens', () => {
-    it('round-trips the subject', () => {
+    it('round-trips the subject and injects a jti', () => {
       const { tokenUtils } = makeTokenUtils();
 
       const refreshToken = tokenUtils.generateRefreshToken({ sub: 'user-9' });
       const payload = tokenUtils.verifyRefreshToken(refreshToken);
 
       expect(payload.sub).toBe('user-9');
+      expect(typeof payload.jti).toBe('string');
+    });
+
+    it('mints unique tokens for the same subject in the same tick', () => {
+      const { tokenUtils } = makeTokenUtils();
+
+      const first = tokenUtils.generateRefreshToken({ sub: 'user-9' });
+      const second = tokenUtils.generateRefreshToken({ sub: 'user-9' });
+
+      expect(second).not.toBe(first);
+      expect(tokenUtils.verifyRefreshToken(first).jti).not.toBe(
+        tokenUtils.verifyRefreshToken(second).jti,
+      );
     });
 
     it('rejects an invalid refresh token', () => {

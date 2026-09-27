@@ -1,5 +1,6 @@
 export interface RefreshJWTPayload {
   sub: string;
+  jti?: string;
   iat?: number;
   exp?: number;
 }
