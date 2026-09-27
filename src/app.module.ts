@@ -11,6 +11,7 @@ import { RedisModule } from './redis/redis.module';
 import { QueueModule } from './queue/queue.module';
 import { NotificationModule } from './notification/notification.module';
 import { OutboxModule } from './outbox/outbox.module';
+import { MonitorsModule } from './monitors/monitors.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { OutboxModule } from './outbox/outbox.module';
     NotificationModule,
     OutboxModule,
     AuthModule,
+    MonitorsModule,
   ],
   controllers: [AppController],
   providers: [

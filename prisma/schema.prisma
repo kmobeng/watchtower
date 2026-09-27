@@ -13,6 +13,10 @@ enum Role {
   ADMIN
 }
 
+enum HttpMethod {
+  GET
+}
+
 model User {
   id                String   @id @default(uuid())
   email             String   @unique
@@ -26,6 +30,7 @@ model User {
   updatedAt         DateTime @updatedAt
 
   refreshTokens RefreshToken[]
+  monitors      Monitor[]
 }
 
 model OutboxEvent {
@@ -48,4 +53,21 @@ model RefreshToken {
   updatedAt DateTime @updatedAt
 
   @@unique([userId, token])
+}
+
+model Monitor {
+  id               String     @id @default(uuid())
+  userId           String     @map("user_id")
+  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  url              String
+  method           HttpMethod @default(GET)
+  intervalSeconds  Int        @map("interval_seconds")
+  timeoutMs        Int        @default(10000) @map("timeout_ms")
+  failureThreshold Int        @default(3) @map("failure_threshold")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  @@unique([userId, url])
+  @@index([userId])
+  @@map("monitors")
 }
