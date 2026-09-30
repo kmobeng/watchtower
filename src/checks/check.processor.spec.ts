@@ -8,7 +8,7 @@ describe('CheckProcessor', () => {
   let processor: CheckProcessor;
   let prisma: {
     monitor: { findUnique: jest.Mock };
-    check: { create: jest.Mock };
+    check: { create: jest.Mock; findMany: jest.Mock };
   };
   let scheduler: { unschedule: jest.Mock };
 
@@ -16,6 +16,7 @@ describe('CheckProcessor', () => {
     id: 'mon-1',
     url: 'https://example.com/health',
     timeoutMs: 10000,
+    failureThreshold: 3,
   };
 
   function jobFor(monitorId: string) {
@@ -25,7 +26,7 @@ describe('CheckProcessor', () => {
   beforeEach(() => {
     prisma = {
       monitor: { findUnique: jest.fn() },
-      check: { create: jest.fn() },
+      check: { create: jest.fn(), findMany: jest.fn() },
     };
     scheduler = { unschedule: jest.fn() };
     processor = new CheckProcessor(
@@ -40,12 +41,16 @@ describe('CheckProcessor', () => {
 
   it('persists an up check on 200', async () => {
     prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.findMany.mockResolvedValue([{ isUp: true }]);
     jest.spyOn(global, 'fetch').mockResolvedValue({
       status: 200,
       body: { cancel: jest.fn().mockResolvedValue(undefined) },
     } as never);
 
-    await processor.process(jobFor('mon-1'));
+    await expect(processor.process(jobFor('mon-1'))).resolves.toEqual({
+      state: 'up',
+      consecutiveFailures: 0,
+    });
 
     expect(prisma.check.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -57,16 +62,26 @@ describe('CheckProcessor', () => {
         error: null,
       }),
     });
+    expect(prisma.check.findMany).toHaveBeenCalledWith({
+      where: { monitorId: 'mon-1' },
+      orderBy: { checkedAt: 'desc' },
+      take: 3,
+      select: { isUp: true },
+    });
   });
 
   it('persists a down check on 500 without throwing', async () => {
     prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.findMany.mockResolvedValue([{ isUp: false }]);
     jest.spyOn(global, 'fetch').mockResolvedValue({
       status: 500,
       body: { cancel: jest.fn().mockResolvedValue(undefined) },
     } as never);
 
-    await expect(processor.process(jobFor('mon-1'))).resolves.toBeUndefined();
+    await expect(processor.process(jobFor('mon-1'))).resolves.toEqual({
+      state: 'suspicious',
+      consecutiveFailures: 1,
+    });
     expect(prisma.check.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ statusCode: 500, isUp: false }),
     });
@@ -74,11 +89,18 @@ describe('CheckProcessor', () => {
 
   it('persists a timed-out check without throwing', async () => {
     prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.findMany.mockResolvedValue([
+      { isUp: false },
+      { isUp: false },
+    ]);
     const abortError = new Error('The operation was aborted');
     abortError.name = 'AbortError';
     jest.spyOn(global, 'fetch').mockRejectedValue(abortError);
 
-    await expect(processor.process(jobFor('mon-1'))).resolves.toBeUndefined();
+    await expect(processor.process(jobFor('mon-1'))).resolves.toEqual({
+      state: 'suspicious',
+      consecutiveFailures: 2,
+    });
     expect(prisma.check.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         statusCode: null,
@@ -89,10 +111,28 @@ describe('CheckProcessor', () => {
     });
   });
 
+  it('returns down at the threshold', async () => {
+    prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.findMany.mockResolvedValue([
+      { isUp: false },
+      { isUp: false },
+      { isUp: false },
+    ]);
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 500,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+
+    await expect(processor.process(jobFor('mon-1'))).resolves.toEqual({
+      state: 'down',
+      consecutiveFailures: 3,
+    });
+  });
+
   it('prunes the scheduler and skips when the monitor is gone', async () => {
     prisma.monitor.findUnique.mockResolvedValue(null);
 
-    await processor.process(jobFor('mon-gone'));
+    await expect(processor.process(jobFor('mon-gone'))).resolves.toBeNull();
 
     expect(scheduler.unschedule).toHaveBeenCalledWith('mon-gone');
     expect(prisma.check.create).not.toHaveBeenCalled();

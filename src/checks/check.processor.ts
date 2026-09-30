@@ -8,6 +8,7 @@ import {
 } from './check-scheduler.service';
 import { CheckSchedulerService } from './check-scheduler.service';
 import { classifyCheck } from './check-classifier';
+import { evaluateStreak, StreakEvaluation } from './check-streak';
 import { runHttpCheck } from './check-http';
 import { PrismaService } from '../prisma.service';
 
@@ -26,21 +27,21 @@ export class CheckProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<CheckMonitorData>): Promise<void> {
+  async process(job: Job<CheckMonitorData>): Promise<StreakEvaluation | null> {
     switch (job.name) {
       case CHECK_MONITOR_JOB: {
-        await this.runCheck(job.data.monitorId);
-        break;
+        return this.runCheck(job.data.monitorId);
       }
       default:
         this.logger.warn(
           { jobId: job.id, jobName: job.name },
           `No handler for job name: ${job.name}`,
         );
+        return null;
     }
   }
 
-  private async runCheck(monitorId: string): Promise<void> {
+  private async runCheck(monitorId: string): Promise<StreakEvaluation | null> {
     const monitor = await this.prisma.monitor.findUnique({
       where: { id: monitorId },
     });
@@ -48,16 +49,13 @@ export class CheckProcessor extends WorkerHost {
     if (!monitor) {
       await this.scheduler.unschedule(monitorId);
       this.logger.log({ monitorId }, 'Monitor gone, scheduler pruned');
-      return;
+      return null;
     }
 
     const result = await runHttpCheck(monitor.url, monitor.timeoutMs);
     const isUp = classifyCheck(result.statusCode);
 
-    // A DOWN result is a successful job: persist it and return normally.
-    // Only infra failures (e.g. the DB write below) throw, letting BullMQ
-    // retry with backoff. Retrying a 500 or a timeout would just re-hammer
-    // a struggling target and skew response-time history.
+    // Record the check result.
     await this.prisma.check.create({
       data: {
         monitorId: monitor.id,
@@ -79,5 +77,26 @@ export class CheckProcessor extends WorkerHost {
       },
       'Check recorded',
     );
+
+    // Evaluate the current streak of failures.
+    const recent = await this.prisma.check.findMany({
+      where: { monitorId: monitor.id },
+      orderBy: { checkedAt: 'desc' },
+      take: monitor.failureThreshold,
+      select: { isUp: true },
+    });
+
+    const evaluation = evaluateStreak(recent, monitor.failureThreshold);
+    this.logger.log(
+      {
+        monitorId: monitor.id,
+        state: evaluation.state,
+        consecutiveFailures: evaluation.consecutiveFailures,
+        threshold: monitor.failureThreshold,
+      },
+      'Streak evaluated',
+    );
+
+    return evaluation;
   }
 }

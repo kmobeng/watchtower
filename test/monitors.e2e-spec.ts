@@ -232,10 +232,25 @@ describe('Monitors (live Postgres + Redis)', () => {
     const checkMonitorId: string = created.body.data.id;
 
     const processor = app.get(CheckProcessor);
-    await processor.process({
-      name: CHECK_MONITOR_JOB,
-      data: { monitorId: checkMonitorId },
-    } as never);
+    const fire = () =>
+      processor.process({
+        name: CHECK_MONITOR_JOB,
+        data: { monitorId: checkMonitorId },
+      } as never);
+
+    // Threshold defaults to 3: first two failures are suspicious, not down.
+    await expect(fire()).resolves.toMatchObject({
+      state: 'suspicious',
+      consecutiveFailures: 1,
+    });
+    await expect(fire()).resolves.toMatchObject({
+      state: 'suspicious',
+      consecutiveFailures: 2,
+    });
+    await expect(fire()).resolves.toMatchObject({
+      state: 'down',
+      consecutiveFailures: 3,
+    });
 
     const rows = await prisma.check.findMany({
       where: { monitorId: checkMonitorId },
