@@ -3,6 +3,7 @@ import { CheckProcessor } from './check.processor';
 import { CHECK_MONITOR_JOB } from './check-scheduler.service';
 import { PrismaService } from '../prisma.service';
 import { CheckSchedulerService } from './check-scheduler.service';
+import { IncidentService } from '../incidents/incident.service';
 
 describe('CheckProcessor', () => {
   let processor: CheckProcessor;
@@ -11,6 +12,7 @@ describe('CheckProcessor', () => {
     check: { create: jest.Mock; findMany: jest.Mock };
   };
   let scheduler: { unschedule: jest.Mock };
+  let incidents: { handleVerdict: jest.Mock };
 
   const monitor = {
     id: 'mon-1',
@@ -29,9 +31,11 @@ describe('CheckProcessor', () => {
       check: { create: jest.fn(), findMany: jest.fn() },
     };
     scheduler = { unschedule: jest.fn() };
+    incidents = { handleVerdict: jest.fn() };
     processor = new CheckProcessor(
       prisma as unknown as PrismaService,
       scheduler as unknown as CheckSchedulerService,
+      incidents as unknown as IncidentService,
     );
   });
 
@@ -127,6 +131,25 @@ describe('CheckProcessor', () => {
       state: 'down',
       consecutiveFailures: 3,
     });
+  });
+
+  it('hands the verdict and persisted check to incidents', async () => {
+    const persistedCheck = { id: 'check-1' };
+    prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.create.mockResolvedValue(persistedCheck);
+    prisma.check.findMany.mockResolvedValue([{ isUp: false }]);
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 500,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+
+    await processor.process(jobFor('mon-1'));
+
+    expect(incidents.handleVerdict).toHaveBeenCalledWith(
+      'mon-1',
+      { state: 'suspicious', consecutiveFailures: 1 },
+      persistedCheck,
+    );
   });
 
   it('prunes the scheduler and skips when the monitor is gone', async () => {

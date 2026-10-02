@@ -10,6 +10,7 @@ import { CheckSchedulerService } from './check-scheduler.service';
 import { classifyCheck } from './check-classifier';
 import { evaluateStreak, StreakEvaluation } from './check-streak';
 import { runHttpCheck } from './check-http';
+import { IncidentService } from '../incidents/incident.service';
 import { PrismaService } from '../prisma.service';
 
 type CheckMonitorData = {
@@ -23,6 +24,7 @@ export class CheckProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly scheduler: CheckSchedulerService,
+    private readonly incidents: IncidentService,
   ) {
     super();
   }
@@ -56,7 +58,7 @@ export class CheckProcessor extends WorkerHost {
     const isUp = classifyCheck(result.statusCode);
 
     // Record the check result.
-    await this.prisma.check.create({
+    const check = await this.prisma.check.create({
       data: {
         monitorId: monitor.id,
         region: CHECK_REGION,
@@ -96,6 +98,10 @@ export class CheckProcessor extends WorkerHost {
       },
       'Streak evaluated',
     );
+
+    // Incidents own what happens next: open on 'down', resolve on 'up'.
+    // Suspicious is observed only.
+    await this.incidents.handleVerdict(monitor.id, evaluation, check);
 
     return evaluation;
   }

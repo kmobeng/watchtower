@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { PrismaService } from '../prisma.service';
+import { IncidentsModule } from '../incidents/incidents.module';
 import { MONITOR_CHECKS_QUEUE } from './check-scheduler.service';
 import { CheckSchedulerService } from './check-scheduler.service';
 import { CheckProcessor } from './check.processor';
@@ -8,6 +9,7 @@ import { CheckReconciler } from './check-reconciler';
 
 @Module({
   imports: [
+    IncidentsModule,
     BullModule.registerQueue({
       name: MONITOR_CHECKS_QUEUE,
       defaultJobOptions: {

@@ -17,6 +17,13 @@ enum HttpMethod {
   GET
 }
 
+enum IncidentStatus {
+  OPEN
+  ACKNOWLEDGED
+  ESCALATED
+  RESOLVED
+}
+
 model User {
   id                String   @id @default(uuid())
   email             String   @unique
@@ -67,6 +74,7 @@ model Monitor {
   createdAt        DateTime   @default(now()) @map("created_at")
   updatedAt        DateTime   @updatedAt @map("updated_at")
   checks           Check[]
+  incidents        Incident[]
 
   @@unique([userId, url])
   @@index([userId])
@@ -87,4 +95,20 @@ model Check {
 
   @@index([monitorId, checkedAt(sort: Desc)])
   @@map("checks")
+}
+
+model Incident {
+  id              String         @id @default(uuid())
+  monitorId       String         @map("monitor_id")
+  monitor         Monitor        @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  status          IncidentStatus @default(OPEN)
+  cause           String
+  openedByCheckId String?        @map("opened_by_check_id")
+  closedByCheckId String?        @map("closed_by_check_id")
+  startedAt       DateTime       @default(now()) @map("started_at")
+  resolvedAt      DateTime?      @map("resolved_at")
+  downtimeSeconds Int?           @map("downtime_seconds")
+
+  @@index([monitorId, startedAt(sort: Desc)])
+  @@map("incidents")
 }

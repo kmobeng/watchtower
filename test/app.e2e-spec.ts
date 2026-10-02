@@ -5,6 +5,10 @@ import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 
 describe('AppController (e2e)', () => {
+  // Full AppModule boot can exceed the default 5s hook timeout under
+  // parallel-suite load.
+  jest.setTimeout(60000);
+
   let app: INestApplication<App>;
 
   beforeEach(async () => {

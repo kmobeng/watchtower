@@ -7,6 +7,10 @@ import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma.service';
 
 describe('Auth smoke (live Postgres + Redis)', () => {
+  // Full AppModule boot (Prisma pools + BullMQ workers) can exceed the
+  // default 5s hook timeout under parallel-suite load.
+  jest.setTimeout(60000);
+
   let app: INestApplication;
   let prisma: PrismaService;
   const email = `smoke-${Date.now()}@watchtower.local`;

@@ -11,6 +11,10 @@ import { PrismaService } from '../src/prisma.service';
 // handler, so 401 = token revoked, 200 = token still valid (and the call is
 // an idempotent re-logout-all in that case).
 describe('logout-all verification (live Postgres + Redis)', () => {
+  // Full AppModule boot (Prisma pools + BullMQ workers) can exceed the
+  // default 5s hook timeout under parallel-suite load.
+  jest.setTimeout(60000);
+
   let app: INestApplication;
   let prisma: PrismaService;
   const email = `logout-verify-${Date.now()}@watchtower.local`;

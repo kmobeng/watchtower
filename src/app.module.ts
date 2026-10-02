@@ -12,6 +12,7 @@ import { QueueModule } from './queue/queue.module';
 import { NotificationModule } from './notification/notification.module';
 import { OutboxModule } from './outbox/outbox.module';
 import { MonitorsModule } from './monitors/monitors.module';
+import { IncidentsModule } from './incidents/incidents.module';
 
 @Module({
   imports: [
@@ -33,6 +34,7 @@ import { MonitorsModule } from './monitors/monitors.module';
     OutboxModule,
     AuthModule,
     MonitorsModule,
+    IncidentsModule,
   ],
   controllers: [AppController],
   providers: [
