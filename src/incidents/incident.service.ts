@@ -15,7 +15,7 @@ import {
   MONITORS_DEFAULT_PAGE,
   MONITORS_MAX_LIMIT,
 } from '../monitors/dto/list-monitors.dto';
-import type { StreakEvaluation } from '../checks/check-streak';
+import type { QuorumVerdict } from '../checks/check-quorum';
 import {
   escalationDeadline,
   tryParseEscalationSteps,
@@ -53,21 +53,22 @@ export class IncidentService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Consumes one evaluated check. Opens on 'down' (idempotent), resolves on
-   * 'up', ignores 'suspicious'. Called by the check processor; nothing else
-   * should open or auto-resolve incidents.
+   * Consumes one quorum verdict. Opens on 'down' (idempotent), resolves on
+   * 'up', and holds on 'hold' — no transition without quorum evidence. Called
+   * by the check processor; nothing else should open or auto-resolve
+   * incidents.
    */
   async handleVerdict(
     monitorId: string,
-    evaluation: StreakEvaluation | null,
+    verdict: { state: QuorumVerdict } | null,
     check: DownCheck,
   ): Promise<Incident | null> {
-    if (!evaluation) return null;
+    if (!verdict) return null;
 
-    if (evaluation.state === 'down') {
+    if (verdict.state === 'down') {
       return this.openIfNeeded(monitorId, check);
     }
-    if (evaluation.state === 'up') {
+    if (verdict.state === 'up') {
       return this.resolveIfOpen(monitorId, check.id);
     }
     return null;
@@ -202,8 +203,11 @@ export class IncidentService {
     if (!existing) return null;
 
     const resolvedAt = new Date();
-    const incident = await this.prisma.incident.update({
-      where: { id: existing.id },
+    // Several regions can report 'up' concurrently. The status is part of the
+    // write so only the first resolver wins and the rest see count 0; a plain
+    // update would let a loser overwrite resolvedAt and downtimeSeconds.
+    const result = await this.prisma.incident.updateMany({
+      where: { id: existing.id, status: { in: OPEN_STATUSES } },
       data: {
         status: IncidentStatus.RESOLVED,
         resolvedAt,
@@ -218,6 +222,14 @@ export class IncidentService {
         // open status, so this is defence in depth.
         nextEscalationAt: null,
       },
+    });
+
+    if (result.count === 0) {
+      return null;
+    }
+
+    const incident = await this.prisma.incident.findUniqueOrThrow({
+      where: { id: existing.id },
     });
     this.logger.log(
       {

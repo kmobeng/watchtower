@@ -12,6 +12,8 @@ import {
   checkSchedulerId,
 } from '../src/checks/check-scheduler.service';
 import { CheckProcessor } from '../src/checks/check.processor';
+import { IncidentService } from '../src/incidents/incident.service';
+import type { FleetConfig } from '../src/checks/check-regions';
 
 describe('Monitors (live Postgres + Redis)', () => {
   let app: INestApplication;
@@ -231,33 +233,34 @@ describe('Monitors (live Postgres + Redis)', () => {
       .expect(201);
     const checkMonitorId: string = created.body.data.id;
 
-    const processor = app.get(CheckProcessor);
+    const processor = new CheckProcessor(
+      prisma,
+      scheduler,
+      app.get(IncidentService),
+      {
+        regions: ['local'],
+        region: 'local',
+        scheduleRegions: ['local'],
+        quorum: 1,
+      } satisfies FleetConfig,
+    );
     const fire = () =>
       processor.process({
         name: CHECK_MONITOR_JOB,
-        data: { monitorId: checkMonitorId },
+        data: { monitorId: checkMonitorId, region: 'local' },
       } as never);
 
     // Threshold defaults to 3: first two failures are suspicious, not down.
-    await expect(fire()).resolves.toMatchObject({
-      state: 'suspicious',
-      consecutiveFailures: 1,
-    });
-    await expect(fire()).resolves.toMatchObject({
-      state: 'suspicious',
-      consecutiveFailures: 2,
-    });
-    await expect(fire()).resolves.toMatchObject({
-      state: 'down',
-      consecutiveFailures: 3,
-    });
+    await expect(fire()).resolves.toMatchObject({ verdict: 'hold' });
+    await expect(fire()).resolves.toMatchObject({ verdict: 'hold' });
+    await expect(fire()).resolves.toMatchObject({ verdict: 'down' });
 
     const rows = await prisma.check.findMany({
       where: { monitorId: checkMonitorId },
     });
-    // At least one row: creating the monitor arms the real scheduler, whose
-    // first fire may race this manual invocation and persist its own row.
-    expect(rows.length).toBeGreaterThanOrEqual(1);
+    // The API process schedules but no longer consumes, so these three manual
+    // invocations are the only writes unless a real worker shares this Redis.
+    expect(rows.length).toBeGreaterThanOrEqual(3);
     for (const row of rows) {
       expect(row).toMatchObject({
         statusCode: null,

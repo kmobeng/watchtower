@@ -44,6 +44,22 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
+### Checker workers
+
+The API schedules checks but does not run them. Each region has its own worker
+process, and checks only happen while a worker is running:
+
+```bash
+# terminal 1: API (schedules every region in CHECK_REGIONS)
+$ npm run start:dev
+
+# terminal 2: worker for the region in CHECK_REGION
+$ npm run start:worker:dev
+```
+
+Set `CHECK_REGIONS` on the API to the comma-separated fleet and `CHECK_REGION`
+on each worker to the region it probes. See `.env.example`.
+
 ## Run tests
 
 ```bash

@@ -110,7 +110,7 @@ model Check {
   timedOut       Boolean  @default(false) @map("timed_out")
   error          String?
 
-  @@index([monitorId, checkedAt(sort: Desc)])
+  @@index([monitorId, region, checkedAt(sort: Desc)])
   @@map("checks")
 }
 

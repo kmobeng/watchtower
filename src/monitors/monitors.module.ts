@@ -3,10 +3,14 @@ import { MonitorsController } from './monitors.controller';
 import { MonitorsService } from './monitors.service';
 import { PrismaService } from '../prisma.service';
 import { AuthModule } from '../auth/auth.module';
-import { ChecksModule } from '../checks/checks.module';
+import { CheckSchedulingModule } from '../checks/check-scheduling.module';
+import { loadApiFleetConfig } from '../checks/check-regions';
 
 @Module({
-  imports: [AuthModule, ChecksModule],
+  imports: [
+    AuthModule,
+    CheckSchedulingModule.forRoot(loadApiFleetConfig(process.env)),
+  ],
   controllers: [MonitorsController],
   providers: [MonitorsService, PrismaService],
   exports: [MonitorsService],

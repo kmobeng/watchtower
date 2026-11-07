@@ -4,6 +4,7 @@ import { CHECK_MONITOR_JOB } from './check-scheduler.service';
 import { PrismaService } from '../prisma.service';
 import { CheckSchedulerService } from './check-scheduler.service';
 import { IncidentService } from '../incidents/incident.service';
+import type { FleetConfig } from './check-regions';
 
 describe('CheckProcessor', () => {
   let processor: CheckProcessor;
@@ -14,15 +15,32 @@ describe('CheckProcessor', () => {
   let scheduler: { unschedule: jest.Mock };
   let incidents: { handleVerdict: jest.Mock };
 
+  const fleet: FleetConfig = {
+    regions: ['local'],
+    region: 'local',
+    scheduleRegions: ['local'],
+    quorum: 1,
+  };
+
   const monitor = {
     id: 'mon-1',
     url: 'https://example.com/health',
     timeoutMs: 10000,
     failureThreshold: 3,
+    intervalSeconds: 60,
   };
 
-  function jobFor(monitorId: string) {
-    return { id: 'job-1', name: CHECK_MONITOR_JOB, data: { monitorId } } as never;
+  function jobFor(monitorId: string, region = 'local') {
+    return {
+      id: 'job-1',
+      name: CHECK_MONITOR_JOB,
+      data: { monitorId, region },
+    } as never;
+  }
+
+  function checks(...states: boolean[]) {
+    const now = new Date();
+    return states.map((isUp) => ({ isUp, checkedAt: now }));
   }
 
   beforeEach(() => {
@@ -36,6 +54,7 @@ describe('CheckProcessor', () => {
       prisma as unknown as PrismaService,
       scheduler as unknown as CheckSchedulerService,
       incidents as unknown as IncidentService,
+      fleet,
     );
   });
 
@@ -43,17 +62,16 @@ describe('CheckProcessor', () => {
     jest.restoreAllMocks();
   });
 
-  it('persists an up check on 200', async () => {
+  it('persists an up check and reports up', async () => {
     prisma.monitor.findUnique.mockResolvedValue(monitor);
-    prisma.check.findMany.mockResolvedValue([{ isUp: true }]);
+    prisma.check.findMany.mockResolvedValue(checks(true));
     jest.spyOn(global, 'fetch').mockResolvedValue({
       status: 200,
       body: { cancel: jest.fn().mockResolvedValue(undefined) },
     } as never);
 
-    await expect(processor.process(jobFor('mon-1'))).resolves.toEqual({
-      state: 'up',
-      consecutiveFailures: 0,
+    await expect(processor.process(jobFor('mon-1'))).resolves.toMatchObject({
+      verdict: 'up',
     });
 
     expect(prisma.check.create).toHaveBeenCalledWith({
@@ -67,24 +85,23 @@ describe('CheckProcessor', () => {
       }),
     });
     expect(prisma.check.findMany).toHaveBeenCalledWith({
-      where: { monitorId: 'mon-1' },
+      where: { monitorId: 'mon-1', region: 'local' },
       orderBy: { checkedAt: 'desc' },
       take: 3,
-      select: { isUp: true },
+      select: { isUp: true, checkedAt: true },
     });
   });
 
-  it('persists a down check on 500 without throwing', async () => {
+  it('persists a down check on 500 without throwing and holds below quorum', async () => {
     prisma.monitor.findUnique.mockResolvedValue(monitor);
-    prisma.check.findMany.mockResolvedValue([{ isUp: false }]);
+    prisma.check.findMany.mockResolvedValue(checks(false));
     jest.spyOn(global, 'fetch').mockResolvedValue({
       status: 500,
       body: { cancel: jest.fn().mockResolvedValue(undefined) },
     } as never);
 
-    await expect(processor.process(jobFor('mon-1'))).resolves.toEqual({
-      state: 'suspicious',
-      consecutiveFailures: 1,
+    await expect(processor.process(jobFor('mon-1'))).resolves.toMatchObject({
+      verdict: 'hold',
     });
     expect(prisma.check.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ statusCode: 500, isUp: false }),
@@ -93,17 +110,13 @@ describe('CheckProcessor', () => {
 
   it('persists a timed-out check without throwing', async () => {
     prisma.monitor.findUnique.mockResolvedValue(monitor);
-    prisma.check.findMany.mockResolvedValue([
-      { isUp: false },
-      { isUp: false },
-    ]);
+    prisma.check.findMany.mockResolvedValue(checks(false, false));
     const abortError = new Error('The operation was aborted');
     abortError.name = 'AbortError';
     jest.spyOn(global, 'fetch').mockRejectedValue(abortError);
 
-    await expect(processor.process(jobFor('mon-1'))).resolves.toEqual({
-      state: 'suspicious',
-      consecutiveFailures: 2,
+    await expect(processor.process(jobFor('mon-1'))).resolves.toMatchObject({
+      verdict: 'hold',
     });
     expect(prisma.check.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -115,29 +128,25 @@ describe('CheckProcessor', () => {
     });
   });
 
-  it('returns down at the threshold', async () => {
+  it('reports down once the region reaches the threshold', async () => {
     prisma.monitor.findUnique.mockResolvedValue(monitor);
-    prisma.check.findMany.mockResolvedValue([
-      { isUp: false },
-      { isUp: false },
-      { isUp: false },
-    ]);
+    prisma.check.findMany.mockResolvedValue(checks(false, false, false));
     jest.spyOn(global, 'fetch').mockResolvedValue({
       status: 500,
       body: { cancel: jest.fn().mockResolvedValue(undefined) },
     } as never);
 
-    await expect(processor.process(jobFor('mon-1'))).resolves.toEqual({
-      state: 'down',
-      consecutiveFailures: 3,
+    await expect(processor.process(jobFor('mon-1'))).resolves.toMatchObject({
+      verdict: 'down',
+      downRegions: ['local'],
     });
   });
 
-  it('hands the verdict and persisted check to incidents', async () => {
+  it('hands the quorum verdict and persisted check to incidents', async () => {
     const persistedCheck = { id: 'check-1' };
     prisma.monitor.findUnique.mockResolvedValue(monitor);
     prisma.check.create.mockResolvedValue(persistedCheck);
-    prisma.check.findMany.mockResolvedValue([{ isUp: false }]);
+    prisma.check.findMany.mockResolvedValue(checks(false));
     jest.spyOn(global, 'fetch').mockResolvedValue({
       status: 500,
       body: { cancel: jest.fn().mockResolvedValue(undefined) },
@@ -147,9 +156,18 @@ describe('CheckProcessor', () => {
 
     expect(incidents.handleVerdict).toHaveBeenCalledWith(
       'mon-1',
-      { state: 'suspicious', consecutiveFailures: 1 },
+      { state: 'hold' },
       persistedCheck,
     );
+  });
+
+  it('drops a job tagged for another region', async () => {
+    await expect(
+      processor.process(jobFor('mon-1', 'elsewhere')),
+    ).resolves.toBeNull();
+
+    expect(prisma.monitor.findUnique).not.toHaveBeenCalled();
+    expect(prisma.check.create).not.toHaveBeenCalled();
   });
 
   it('prunes the scheduler and skips when the monitor is gone', async () => {

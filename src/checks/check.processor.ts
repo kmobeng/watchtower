@@ -1,23 +1,29 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
-import { Logger } from '@nestjs/common';
-import { CHECK_REGION } from './check-region';
+import { Inject, Logger } from '@nestjs/common';
+import type { Job } from 'bullmq';
+import {
+  CHECK_FLEET_CONFIG,
+  DEFAULT_CHECK_REGION,
+  checkQueueName,
+} from './check-regions';
+import type { FleetConfig } from './check-regions';
 import {
   CHECK_MONITOR_JOB,
-  MONITOR_CHECKS_QUEUE,
+  CheckSchedulerService,
 } from './check-scheduler.service';
-import { CheckSchedulerService } from './check-scheduler.service';
+import type { CheckMonitorJob } from './check-scheduler.service';
 import { classifyCheck } from './check-classifier';
-import { evaluateStreak, StreakEvaluation } from './check-streak';
 import { runHttpCheck } from './check-http';
+import { evaluateQuorum, freshnessWindowMs } from './check-quorum';
+import type { QuorumEvaluation, RegionSnapshot } from './check-quorum';
 import { IncidentService } from '../incidents/incident.service';
 import { PrismaService } from '../prisma.service';
 
-type CheckMonitorData = {
-  monitorId: string;
-};
+// Evaluated at import so the @Processor decorator can pick its region queue.
+// Entrypoints import 'dotenv/config' first, before this module is loaded.
+const WORKER_REGION = process.env.CHECK_REGION?.trim() || DEFAULT_CHECK_REGION;
 
-@Processor(MONITOR_CHECKS_QUEUE)
+@Processor(checkQueueName(WORKER_REGION))
 export class CheckProcessor extends WorkerHost {
   private readonly logger = new Logger(CheckProcessor.name);
 
@@ -25,43 +31,58 @@ export class CheckProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly scheduler: CheckSchedulerService,
     private readonly incidents: IncidentService,
+    @Inject(CHECK_FLEET_CONFIG) private readonly fleet: FleetConfig,
   ) {
     super();
   }
 
-  async process(job: Job<CheckMonitorData>): Promise<StreakEvaluation | null> {
-    switch (job.name) {
-      case CHECK_MONITOR_JOB: {
-        return this.runCheck(job.data.monitorId);
-      }
-      default:
-        this.logger.warn(
-          { jobId: job.id, jobName: job.name },
-          `No handler for job name: ${job.name}`,
-        );
-        return null;
+  async process(job: Job<CheckMonitorJob>): Promise<QuorumEvaluation | null> {
+    if (job.name !== CHECK_MONITOR_JOB) {
+      this.logger.warn(
+        { jobId: job.id, jobName: job.name },
+        `No handler for job name: ${job.name}`,
+      );
+      return null;
     }
+
+    const region = job.data.region ?? this.fleet.region ?? DEFAULT_CHECK_REGION;
+
+    if (this.fleet.region !== null && region !== this.fleet.region) {
+      // Queues are region-scoped, so this should be impossible. Dropping is
+      // safer than probing from the wrong region and corrupting the quorum.
+      this.logger.warn(
+        { jobRegion: region, workerRegion: this.fleet.region },
+        'Dropping job for another region',
+      );
+      return null;
+    }
+
+    return this.runCheck(job.data.monitorId, region);
   }
 
-  private async runCheck(monitorId: string): Promise<StreakEvaluation | null> {
+  private async runCheck(
+    monitorId: string,
+    region: string,
+  ): Promise<QuorumEvaluation | null> {
     const monitor = await this.prisma.monitor.findUnique({
       where: { id: monitorId },
     });
 
     if (!monitor) {
       await this.scheduler.unschedule(monitorId);
-      this.logger.log({ monitorId }, 'Monitor gone, scheduler pruned');
+      this.logger.log({ monitorId, region }, 'Monitor gone, scheduler pruned');
       return null;
     }
 
     const result = await runHttpCheck(monitor.url, monitor.timeoutMs);
     const isUp = classifyCheck(result.statusCode);
 
-    // Record the check result.
+    // Record this region's result before evaluating, so the snapshot query
+    // below sees it.
     const check = await this.prisma.check.create({
       data: {
         monitorId: monitor.id,
-        region: CHECK_REGION,
+        region,
         statusCode: result.statusCode,
         responseTimeMs: result.responseTimeMs,
         isUp,
@@ -73,6 +94,7 @@ export class CheckProcessor extends WorkerHost {
     this.logger.log(
       {
         monitorId: monitor.id,
+        region,
         statusCode: result.statusCode,
         responseTimeMs: result.responseTimeMs,
         isUp,
@@ -80,29 +102,64 @@ export class CheckProcessor extends WorkerHost {
       'Check recorded',
     );
 
-    // Evaluate the current streak of failures.
-    const recent = await this.prisma.check.findMany({
-      where: { monitorId: monitor.id },
-      orderBy: { checkedAt: 'desc' },
-      take: monitor.failureThreshold,
-      select: { isUp: true },
+    const snapshots = await this.loadSnapshots(
+      monitor.id,
+      monitor.failureThreshold,
+    );
+
+    const evaluation = evaluateQuorum({
+      snapshots,
+      threshold: monitor.failureThreshold,
+      quorum: this.fleet.quorum,
+      now: new Date(),
+      freshnessMs: freshnessWindowMs(monitor.intervalSeconds),
     });
 
-    const evaluation = evaluateStreak(recent, monitor.failureThreshold);
     this.logger.log(
       {
         monitorId: monitor.id,
-        state: evaluation.state,
-        consecutiveFailures: evaluation.consecutiveFailures,
+        region,
+        verdict: evaluation.verdict,
+        freshRegions: evaluation.freshRegions,
+        downRegions: evaluation.downRegions,
+        upRegions: evaluation.upRegions,
         threshold: monitor.failureThreshold,
       },
-      'Streak evaluated',
+      'Quorum evaluated',
     );
 
-    // Incidents own what happens next: open on 'down', resolve on 'up'.
-    // Suspicious is observed only.
-    await this.incidents.handleVerdict(monitor.id, evaluation, check);
+    // Incidents own what happens next: open on 'down', resolve on 'up', and
+    // ignore 'hold'.
+    await this.incidents.handleVerdict(
+      monitor.id,
+      { state: evaluation.verdict },
+      check,
+    );
 
     return evaluation;
+  }
+
+  private async loadSnapshots(
+    monitorId: string,
+    threshold: number,
+  ): Promise<RegionSnapshot[]> {
+    // One small indexed query per region. This stays correct even when one
+    // region is slow: a shared limit could crowd its history out.
+    return Promise.all(
+      this.fleet.regions.map(async (region) => {
+        const recent = await this.prisma.check.findMany({
+          where: { monitorId, region },
+          orderBy: { checkedAt: 'desc' },
+          take: threshold,
+          select: { isUp: true, checkedAt: true },
+        });
+
+        return {
+          region,
+          recent,
+          latestCheckedAt: recent[0]?.checkedAt ?? null,
+        };
+      }),
+    );
   }
 }

@@ -1,3 +1,6 @@
+// Must run before any module reads process.env (region config is read at
+// import time). Keep this the first import in the file.
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import cookieParser from 'cookie-parser';

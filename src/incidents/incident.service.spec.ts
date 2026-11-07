@@ -2,7 +2,11 @@ import 'reflect-metadata';
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { IncidentStatus, Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
-import { IncidentService, deriveCause } from './incident.service';
+import {
+  IncidentService,
+  deriveCause,
+  OPEN_STATUSES,
+} from './incident.service';
 
 const CHAN_1 = '11111111-1111-4111-8111-111111111111';
 const CHAN_2 = '22222222-2222-4222-8222-222222222222';
@@ -58,7 +62,7 @@ describe('IncidentService', () => {
 
       const result = await service.handleVerdict(
         'mon-1',
-        { state: 'down', consecutiveFailures: 3 },
+        { state: 'down' },
         check,
       );
 
@@ -87,11 +91,7 @@ describe('IncidentService', () => {
       });
       prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
 
-      await service.handleVerdict(
-        'mon-1',
-        { state: 'down', consecutiveFailures: 3 },
-        check,
-      );
+      await service.handleVerdict('mon-1', { state: 'down' }, check);
 
       const { startedAt, nextEscalationAt } =
         prisma.incident.create.mock.calls[0][0].data;
@@ -109,11 +109,7 @@ describe('IncidentService', () => {
       });
       prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
 
-      await service.handleVerdict(
-        'mon-1',
-        { state: 'down', consecutiveFailures: 3 },
-        check,
-      );
+      await service.handleVerdict('mon-1', { state: 'down' }, check);
 
       const { startedAt, nextEscalationAt } =
         prisma.incident.create.mock.calls[0][0].data;
@@ -128,11 +124,7 @@ describe('IncidentService', () => {
       });
       prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
 
-      await service.handleVerdict(
-        'mon-1',
-        { state: 'down', consecutiveFailures: 3 },
-        check,
-      );
+      await service.handleVerdict('mon-1', { state: 'down' }, check);
 
       expect(prisma.incident.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -146,7 +138,7 @@ describe('IncidentService', () => {
 
       const result = await service.handleVerdict(
         'mon-1',
-        { state: 'down', consecutiveFailures: 4 },
+        { state: 'down' },
         check,
       );
 
@@ -167,7 +159,7 @@ describe('IncidentService', () => {
 
       const result = await service.handleVerdict(
         'mon-1',
-        { state: 'down', consecutiveFailures: 3 },
+        { state: 'down' },
         check,
       );
 
@@ -180,55 +172,74 @@ describe('IncidentService', () => {
         id: 'inc-1',
         startedAt,
       });
-      prisma.incident.update.mockImplementation(({ data }) => ({
-        id: 'inc-1',
-        ...data,
-      }));
+      prisma.incident.updateMany.mockResolvedValue({ count: 1 });
+      prisma.incident.findUniqueOrThrow.mockImplementation(
+        ({ where }: { where: { id: string } }) => ({
+          id: where.id,
+          status: IncidentStatus.RESOLVED,
+          resolvedAt: new Date(),
+          downtimeSeconds: 125,
+          closedByCheckId: 'check-9',
+        }),
+      );
 
       const result = await service.handleVerdict(
         'mon-1',
-        { state: 'up', consecutiveFailures: 0 },
+        { state: 'up' },
         { ...check, id: 'check-9' },
       );
 
-      expect(prisma.incident.update).toHaveBeenCalledWith({
-        where: { id: 'inc-1' },
+      expect(prisma.incident.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'inc-1',
+          status: { in: OPEN_STATUSES },
+        },
         data: expect.objectContaining({
           status: IncidentStatus.RESOLVED,
           closedByCheckId: 'check-9',
           nextEscalationAt: null,
         }),
       });
-      expect(result?.downtimeSeconds).toBeGreaterThanOrEqual(124);
-      expect(result?.downtimeSeconds).toBeLessThanOrEqual(126);
+      expect(result?.downtimeSeconds).toBe(125);
+    });
+
+    it('lets only one concurrent resolver win', async () => {
+      prisma.incident.findFirst.mockResolvedValue({
+        id: 'inc-1',
+        startedAt: new Date(Date.now() - 1000),
+      });
+      // Another region resolved it between our read and our write.
+      prisma.incident.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.handleVerdict(
+          'mon-1',
+          { state: 'up' },
+          { ...check, id: 'check-9' },
+        ),
+      ).resolves.toBeNull();
+      expect(prisma.incident.findUniqueOrThrow).not.toHaveBeenCalled();
     });
 
     it('does nothing on up with no open incident', async () => {
       prisma.incident.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.handleVerdict(
-          'mon-1',
-          { state: 'up', consecutiveFailures: 0 },
-          check,
-        ),
+        service.handleVerdict('mon-1', { state: 'up' }, check),
       ).resolves.toBeNull();
-      expect(prisma.incident.update).not.toHaveBeenCalled();
+      expect(prisma.incident.updateMany).not.toHaveBeenCalled();
     });
 
-    it('ignores suspicious and null evaluations', async () => {
+    it('holds without touching incidents and ignores null verdicts', async () => {
       await expect(
-        service.handleVerdict(
-          'mon-1',
-          { state: 'suspicious', consecutiveFailures: 2 },
-          check,
-        ),
+        service.handleVerdict('mon-1', { state: 'hold' }, check),
       ).resolves.toBeNull();
       await expect(
         service.handleVerdict('mon-1', null, check),
       ).resolves.toBeNull();
       expect(prisma.incident.findFirst).not.toHaveBeenCalled();
       expect(prisma.incident.create).not.toHaveBeenCalled();
+      expect(prisma.incident.updateMany).not.toHaveBeenCalled();
     });
   });
 

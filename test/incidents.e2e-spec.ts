@@ -7,8 +7,13 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma.service';
 import { AllExceptionsFilter } from '../src/common/filters/all-exception.filter';
-import { CHECK_MONITOR_JOB } from '../src/checks/check-scheduler.service';
+import {
+  CHECK_MONITOR_JOB,
+  CheckSchedulerService,
+} from '../src/checks/check-scheduler.service';
 import { CheckProcessor } from '../src/checks/check.processor';
+import { IncidentService } from '../src/incidents/incident.service';
+import type { FleetConfig } from '../src/checks/check-regions';
 
 describe('Incidents (live Postgres + Redis)', () => {
   let app: INestApplication;
@@ -56,7 +61,17 @@ describe('Incidents (live Postgres + Redis)', () => {
     app.useGlobalFilters(new AllExceptionsFilter());
     await app.init();
     prisma = app.get(PrismaService);
-    processor = app.get(CheckProcessor);
+    processor = new CheckProcessor(
+      prisma,
+      app.get(CheckSchedulerService),
+      app.get(IncidentService),
+      {
+        regions: ['local'],
+        region: 'local',
+        scheduleRegions: ['local'],
+        quorum: 1,
+      } satisfies FleetConfig,
+    );
 
     const regA = await request(app.getHttpServer())
       .post('/api/v1/auth/register')
@@ -83,7 +98,7 @@ describe('Incidents (live Postgres + Redis)', () => {
   function fire(id: string) {
     return processor.process({
       name: CHECK_MONITOR_JOB,
-      data: { monitorId: id },
+      data: { monitorId: id, region: 'local' },
     } as never);
   }
 
