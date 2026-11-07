@@ -14,6 +14,7 @@ import { OutboxModule } from './outbox/outbox.module';
 import { MonitorsModule } from './monitors/monitors.module';
 import { IncidentsModule } from './incidents/incidents.module';
 import { EscalationPoliciesModule } from './escalation-policies/escalation-policies.module';
+import { NotificationChannelsModule } from './notification-channels/notification-channels.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { EscalationPoliciesModule } from './escalation-policies/escalation-polic
     MonitorsModule,
     IncidentsModule,
     EscalationPoliciesModule,
+    NotificationChannelsModule,
   ],
   controllers: [AppController],
   providers: [

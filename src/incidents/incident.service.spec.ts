@@ -4,6 +4,9 @@ import { IncidentStatus, Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
 import { IncidentService, deriveCause } from './incident.service';
 
+const CHAN_1 = '11111111-1111-4111-8111-111111111111';
+const CHAN_2 = '22222222-2222-4222-8222-222222222222';
+
 describe('IncidentService', () => {
   let service: IncidentService;
   let prisma: {
@@ -76,7 +79,10 @@ describe('IncidentService', () => {
       prisma.incident.findFirst.mockResolvedValue(null);
       prisma.monitor.findUnique.mockResolvedValue({
         escalationPolicy: {
-          steps: [{ afterMinutes: 5, notifyChannelId: 'chan-1' }],
+          steps: [
+            { afterMinutes: 5, notifyChannelId: CHAN_1 },
+            { afterMinutes: 15, notifyChannelId: CHAN_2 },
+          ],
         },
       });
       prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
@@ -92,6 +98,27 @@ describe('IncidentService', () => {
       expect(startedAt).toBeInstanceOf(Date);
       expect(nextEscalationAt).toBeInstanceOf(Date);
       expect(nextEscalationAt.getTime() - startedAt.getTime()).toBe(5 * 60_000);
+    });
+
+    it('schedules an immediate first alert when the policy starts at zero', async () => {
+      prisma.incident.findFirst.mockResolvedValue(null);
+      prisma.monitor.findUnique.mockResolvedValue({
+        escalationPolicy: {
+          steps: [{ afterMinutes: 0, notifyChannelId: CHAN_1 }],
+        },
+      });
+      prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
+
+      await service.handleVerdict(
+        'mon-1',
+        { state: 'down', consecutiveFailures: 3 },
+        check,
+      );
+
+      const { startedAt, nextEscalationAt } =
+        prisma.incident.create.mock.calls[0][0].data;
+      expect(nextEscalationAt).toBeInstanceOf(Date);
+      expect(nextEscalationAt.getTime()).toBe(startedAt.getTime());
     });
 
     it('ignores a malformed policy instead of blocking the open', async () => {

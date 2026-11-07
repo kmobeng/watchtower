@@ -1,5 +1,6 @@
 import type { PrismaService } from '../prisma.service';
 import type { NotificationService } from '../notification/notification.service';
+import type { IncidentNotificationsService } from '../incident-notifications/incident-notifications.service';
 import { OutboxPoller } from './outbox-poller';
 
 const makeEvent = (overrides: Record<string, any> = {}) => ({
@@ -20,9 +21,9 @@ describe('OutboxPoller', () => {
   let enqueueEmailVerification: jest.Mock;
   let enqueuePasswordReset: jest.Mock;
   let enqueueEmailChangeNotice: jest.Mock;
+  let enqueueIncidentNotification: jest.Mock;
   let loggerWarn: jest.Mock;
   let loggerError: jest.Mock;
-  let loggerLog: jest.Mock;
 
   beforeEach(() => {
     findMany = jest.fn().mockResolvedValue([]);
@@ -30,6 +31,7 @@ describe('OutboxPoller', () => {
     enqueueEmailVerification = jest.fn().mockResolvedValue(undefined);
     enqueuePasswordReset = jest.fn().mockResolvedValue(undefined);
     enqueueEmailChangeNotice = jest.fn().mockResolvedValue(undefined);
+    enqueueIncidentNotification = jest.fn().mockResolvedValue(undefined);
 
     poller = new OutboxPoller(
       {
@@ -40,13 +42,14 @@ describe('OutboxPoller', () => {
         enqueuePasswordReset,
         enqueueEmailChangeNotice,
       } as unknown as NotificationService,
+      {
+        enqueue: enqueueIncidentNotification,
+      } as unknown as IncidentNotificationsService,
     );
 
     loggerWarn = jest.fn();
     loggerError = jest.fn();
-    loggerLog = jest.fn();
     (poller as any).logger = {
-      log: loggerLog,
       warn: loggerWarn,
       error: loggerError,
     };
@@ -208,7 +211,7 @@ describe('OutboxPoller', () => {
     });
   });
 
-  it('records incident-escalated events as processed while channel delivery is pending', async () => {
+  it('enqueues incident-escalated events for channel delivery', async () => {
     findMany.mockResolvedValue([
       makeEvent({
         eventType: 'incident-escalated',
@@ -218,21 +221,18 @@ describe('OutboxPoller', () => {
           incidentId: 'inc-1',
           monitorId: 'mon-1',
           step: 0,
-          notifyChannelId: 'chan-1',
+          notifyChannelId: '11111111-1111-4111-8111-111111111111',
         },
       }),
     ]);
 
     await poller.dispatchOutboxEvents();
 
-    expect(loggerLog).toHaveBeenCalledWith(
-      expect.objectContaining({
-        incidentId: 'inc-1',
-        step: 0,
-        notifyChannelId: 'chan-1',
-      }),
-      expect.any(String),
-    );
+    expect(enqueueIncidentNotification).toHaveBeenCalledWith({
+      incidentId: 'inc-1',
+      channelId: '11111111-1111-4111-8111-111111111111',
+      step: 0,
+    });
     expect(update).toHaveBeenCalledWith({
       where: { id: 'event-1' },
       data: { processedAt: expect.any(Date) },

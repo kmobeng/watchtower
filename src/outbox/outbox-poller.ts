@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { NotificationService } from '../notification/notification.service';
+import { IncidentNotificationsService } from '../incident-notifications/incident-notifications.service';
 import { PrismaService } from '../prisma.service';
 
 type OutboxEvent = {
@@ -20,6 +21,7 @@ export class OutboxPoller {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
+    private readonly incidentNotifications: IncidentNotificationsService,
   ) {}
 
   @Cron(CronExpression.EVERY_5_SECONDS)
@@ -86,17 +88,13 @@ export class OutboxPoller {
         });
         break;
       case 'incident-escalated':
-        // Channel delivery lands with the notification-channels step. Until
-        // then the event is durable and observable rather than silently lost.
-        this.logger.log(
-          {
-            incidentId: event.payload.incidentId,
-            monitorId: event.payload.monitorId,
-            step: event.payload.step,
-            notifyChannelId: event.payload.notifyChannelId,
-          },
-          'Incident escalated (channel delivery pending)',
-        );
+        // The delivery row is created by the worker, not here: enqueueing is
+        // cheap and the unique constraint is the actual idempotency gate.
+        await this.incidentNotifications.enqueue({
+          incidentId: event.payload.incidentId,
+          channelId: event.payload.notifyChannelId,
+          step: event.payload.step,
+        });
         break;
       default:
         this.logger.warn(

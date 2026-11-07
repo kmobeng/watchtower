@@ -116,7 +116,9 @@ export class EscalationSweepService {
           escalationStep: stepIndex,
         },
         data: {
-          status: IncidentStatus.ESCALATED,
+          // Step 0 is the immediate first alert, not an escalation. Only
+          // later steps move the incident into ESCALATED.
+          ...(stepIndex > 0 ? { status: IncidentStatus.ESCALATED } : {}),
           escalationStep: stepIndex + 1,
           nextEscalationAt: following,
         },

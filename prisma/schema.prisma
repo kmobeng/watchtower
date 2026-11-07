@@ -24,6 +24,18 @@ enum IncidentStatus {
   RESOLVED
 }
 
+enum NotificationChannelType {
+  EMAIL
+  SMS
+}
+
+enum NotificationDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
 model User {
   id                String    @id @default(uuid())
   email             String    @unique
@@ -36,9 +48,10 @@ model User {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  refreshTokens      RefreshToken[]
-  monitors           Monitor[]
-  escalationPolicies EscalationPolicy[]
+  refreshTokens       RefreshToken[]
+  monitors            Monitor[]
+  escalationPolicies  EscalationPolicy[]
+  notificationChannels NotificationChannel[]
 }
 
 model OutboxEvent {
@@ -116,6 +129,8 @@ model Incident {
   escalationStep   Int            @default(0) @map("escalation_step")
   nextEscalationAt DateTime?      @map("next_escalation_at")
 
+  notificationDeliveries NotificationDelivery[]
+
   @@index([monitorId, startedAt(sort: Desc)])
   @@index([status, nextEscalationAt])
   @@map("incidents")
@@ -135,4 +150,45 @@ model EscalationPolicy {
 
   @@index([userId])
   @@map("escalation_policies")
+}
+
+model NotificationChannel {
+  id          String                  @id @default(uuid())
+  userId      String                  @map("user_id")
+  user        User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        NotificationChannelType
+  destination String
+  label       String?
+  createdAt   DateTime                @default(now()) @map("created_at")
+  updatedAt   DateTime                @updatedAt @map("updated_at")
+
+  deliveries NotificationDelivery[]
+
+  @@index([userId])
+  @@map("notification_channels")
+}
+
+model NotificationDelivery {
+  id          String                     @id @default(uuid())
+  incidentId  String                     @map("incident_id")
+  incident    Incident                   @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  channelId   String                     @map("channel_id")
+  channel     NotificationChannel        @relation(fields: [channelId], references: [id], onDelete: Restrict)
+  step        Int
+  // Snapshots so editing or deleting a channel never rewrites history.
+  channelType NotificationChannelType    @map("channel_type")
+  destination String
+  status      NotificationDeliveryStatus @default(PENDING)
+  attempts    Int                        @default(0)
+  claimedAt   DateTime?                  @map("claimed_at")
+  sentAt      DateTime?                  @map("sent_at")
+  lastError   String?                    @map("last_error")
+  createdAt   DateTime                   @default(now()) @map("created_at")
+  updatedAt   DateTime                   @updatedAt @map("updated_at")
+
+  // The idempotency gate: one delivery per incident/channel/step.
+  @@unique([incidentId, channelId, step])
+  @@index([incidentId])
+  @@index([status, claimedAt])
+  @@map("notification_deliveries")
 }

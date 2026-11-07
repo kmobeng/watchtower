@@ -4,15 +4,24 @@ import {
   tryParseEscalationSteps,
 } from './escalation-steps';
 
+const CHAN_1 = '11111111-1111-4111-8111-111111111111';
+const CHAN_2 = '22222222-2222-4222-8222-222222222222';
+
 describe('escalation steps', () => {
   const valid = [
-    { afterMinutes: 5, notifyChannelId: 'chan-1' },
-    { afterMinutes: 15, notifyChannelId: 'chan-2' },
+    { afterMinutes: 5, notifyChannelId: CHAN_1 },
+    { afterMinutes: 15, notifyChannelId: CHAN_2 },
   ];
 
   describe('parseEscalationSteps', () => {
     it('normalizes a valid ordered list', () => {
       expect(parseEscalationSteps(valid)).toEqual(valid);
+    });
+
+    it('accepts an immediate first step', () => {
+      expect(
+        parseEscalationSteps([{ afterMinutes: 0, notifyChannelId: CHAN_1 }]),
+      ).toEqual([{ afterMinutes: 0, notifyChannelId: CHAN_1 }]);
     });
 
     it.each([
@@ -22,17 +31,20 @@ describe('escalation steps', () => {
         'more than ten steps',
         Array.from({ length: 11 }, (_, i) => ({
           afterMinutes: i + 1,
-          notifyChannelId: 'chan',
+          notifyChannelId: CHAN_1,
         })),
       ],
       ['a non-object entry', ['nope']],
       [
         'a non-integer afterMinutes',
-        [{ afterMinutes: 1.5, notifyChannelId: 'c' }],
+        [{ afterMinutes: 1.5, notifyChannelId: CHAN_1 }],
       ],
-      ['a zero afterMinutes', [{ afterMinutes: 0, notifyChannelId: 'c' }]],
+      [
+        'a negative afterMinutes',
+        [{ afterMinutes: -1, notifyChannelId: CHAN_1 }],
+      ],
       ['a missing channel', [{ afterMinutes: 5 }]],
-      ['an empty channel', [{ afterMinutes: 5, notifyChannelId: '' }]],
+      ['a non-UUID channel', [{ afterMinutes: 5, notifyChannelId: 'chan-1' }]],
     ])('rejects %s', (_label, value) => {
       expect(() => parseEscalationSteps(value)).toThrow();
     });
@@ -40,14 +52,14 @@ describe('escalation steps', () => {
     it('rejects non-increasing afterMinutes', () => {
       expect(() =>
         parseEscalationSteps([
-          { afterMinutes: 10, notifyChannelId: 'a' },
-          { afterMinutes: 10, notifyChannelId: 'b' },
+          { afterMinutes: 10, notifyChannelId: CHAN_1 },
+          { afterMinutes: 10, notifyChannelId: CHAN_2 },
         ]),
       ).toThrow();
       expect(() =>
         parseEscalationSteps([
-          { afterMinutes: 10, notifyChannelId: 'a' },
-          { afterMinutes: 5, notifyChannelId: 'b' },
+          { afterMinutes: 10, notifyChannelId: CHAN_1 },
+          { afterMinutes: 5, notifyChannelId: CHAN_2 },
         ]),
       ).toThrow();
     });
@@ -69,6 +81,15 @@ describe('escalation steps', () => {
       );
       expect(escalationDeadline(startedAt, valid, 1)?.toISOString()).toBe(
         '2026-01-01T00:15:00.000Z',
+      );
+    });
+
+    it('returns startedAt for an immediate step', () => {
+      const startedAt = new Date('2026-01-01T00:00:00Z');
+      const immediate = [{ afterMinutes: 0, notifyChannelId: CHAN_1 }];
+
+      expect(escalationDeadline(startedAt, immediate, 0)?.getTime()).toBe(
+        startedAt.getTime(),
       );
     });
 

@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { EscalationPolicy, Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
 import { CreateEscalationPolicyDto } from './dto/create-escalation-policy.dto';
@@ -12,6 +16,8 @@ export class EscalationPoliciesService {
     userId: string,
     dto: CreateEscalationPolicyDto,
   ): Promise<EscalationPolicy> {
+    await this.assertChannelsOwned(userId, dto.steps);
+
     return this.prisma.escalationPolicy.create({
       data: {
         userId,
@@ -51,6 +57,10 @@ export class EscalationPoliciesService {
       return existing;
     }
 
+    if (dto.steps !== undefined) {
+      await this.assertChannelsOwned(userId, dto.steps);
+    }
+
     return this.prisma.escalationPolicy.update({
       where: { id: existing.id },
       data: {
@@ -69,6 +79,30 @@ export class EscalationPoliciesService {
 
     if (result.count === 0) {
       throw new NotFoundException('Escalation policy not found');
+    }
+  }
+
+  /**
+   * A policy that points at someone else's channel would leak another user's
+   * destination into this user's alerts, so ownership is checked on every
+   * write rather than trusted from the request body.
+   */
+  private async assertChannelsOwned(
+    userId: string,
+    steps: { notifyChannelId: string }[],
+  ): Promise<void> {
+    const ids = [...new Set(steps.map((step) => step.notifyChannelId))];
+    if (ids.length === 0) return;
+
+    const owned = await this.prisma.notificationChannel.findMany({
+      where: { id: { in: ids }, userId },
+      select: { id: true },
+    });
+
+    if (owned.length !== ids.length) {
+      throw new BadRequestException(
+        'steps reference an unknown notification channel',
+      );
     }
   }
 }

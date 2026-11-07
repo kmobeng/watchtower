@@ -1,7 +1,9 @@
 import 'reflect-metadata';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { EscalationPoliciesService } from './escalation-policies.service';
+
+const CHAN_1 = '11111111-1111-4111-8111-111111111111';
 
 describe('EscalationPoliciesService', () => {
   let service: EscalationPoliciesService;
@@ -13,9 +15,10 @@ describe('EscalationPoliciesService', () => {
       update: jest.Mock;
       deleteMany: jest.Mock;
     };
+    notificationChannel: { findMany: jest.Mock };
   };
 
-  const steps = [{ afterMinutes: 5, notifyChannelId: 'chan-1' }];
+  const steps = [{ afterMinutes: 5, notifyChannelId: CHAN_1 }];
 
   beforeEach(() => {
     prisma = {
@@ -25,6 +28,9 @@ describe('EscalationPoliciesService', () => {
         findFirst: jest.fn(),
         update: jest.fn(),
         deleteMany: jest.fn(),
+      },
+      notificationChannel: {
+        findMany: jest.fn().mockResolvedValue([{ id: CHAN_1 }]),
       },
     };
     service = new EscalationPoliciesService(prisma as unknown as PrismaService);
@@ -36,9 +42,22 @@ describe('EscalationPoliciesService', () => {
     await expect(
       service.create('user-1', { name: 'Primary', steps }),
     ).resolves.toEqual({ id: 'pol-1' });
+    expect(prisma.notificationChannel.findMany).toHaveBeenCalledWith({
+      where: { id: { in: [CHAN_1] }, userId: 'user-1' },
+      select: { id: true },
+    });
     expect(prisma.escalationPolicy.create).toHaveBeenCalledWith({
       data: { userId: 'user-1', name: 'Primary', steps },
     });
+  });
+
+  it('rejects steps that reference a channel the user does not own', async () => {
+    prisma.notificationChannel.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.create('user-1', { name: 'Primary', steps }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.escalationPolicy.create).not.toHaveBeenCalled();
   });
 
   it('lists only the user policies, newest first', async () => {
@@ -68,6 +87,7 @@ describe('EscalationPoliciesService', () => {
 
     await expect(service.update('user-1', 'pol-1', {})).resolves.toBe(existing);
     expect(prisma.escalationPolicy.update).not.toHaveBeenCalled();
+    expect(prisma.notificationChannel.findMany).not.toHaveBeenCalled();
   });
 
   it('patches only the provided fields', async () => {
@@ -83,6 +103,17 @@ describe('EscalationPoliciesService', () => {
       where: { id: 'pol-1' },
       data: { name: 'Renamed' },
     });
+    expect(prisma.notificationChannel.findMany).not.toHaveBeenCalled();
+  });
+
+  it('validates channel ownership when steps are patched', async () => {
+    prisma.escalationPolicy.findFirst.mockResolvedValue({ id: 'pol-1' });
+    prisma.notificationChannel.findMany.mockResolvedValue([]);
+
+    await expect(
+      service.update('user-1', 'pol-1', { steps }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.escalationPolicy.update).not.toHaveBeenCalled();
   });
 
   it('deletes only the user policy and 404s when nothing matched', async () => {

@@ -1,15 +1,7 @@
 import { Type } from 'class-transformer';
-import {
-  IsInt,
-  IsNotEmpty,
-  IsString,
-  Max,
-  MaxLength,
-  Min,
-} from 'class-validator';
+import { IsInt, IsUUID, Max, Min } from 'class-validator';
 import {
   ESCALATION_MAX_AFTER_MINUTES,
-  ESCALATION_MAX_CHANNEL_ID_LENGTH,
   ESCALATION_MIN_AFTER_MINUTES,
 } from '../escalation-steps';
 
@@ -24,10 +16,6 @@ export class EscalationStepDto {
   })
   afterMinutes!: number;
 
-  @IsString({ message: 'notifyChannelId must be a string' })
-  @IsNotEmpty({ message: 'notifyChannelId is required' })
-  @MaxLength(ESCALATION_MAX_CHANNEL_ID_LENGTH, {
-    message: `notifyChannelId must be at most ${ESCALATION_MAX_CHANNEL_ID_LENGTH} characters`,
-  })
+  @IsUUID('4', { message: 'notifyChannelId must be a UUID' })
   notifyChannelId!: string;
 }

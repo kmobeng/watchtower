@@ -10,9 +10,13 @@ export interface EscalationStep {
 
 export const ESCALATION_MIN_STEPS = 1;
 export const ESCALATION_MAX_STEPS = 10;
-export const ESCALATION_MIN_AFTER_MINUTES = 1;
+// Zero means "immediately on open": the first alert of a cascade.
+export const ESCALATION_MIN_AFTER_MINUTES = 0;
 export const ESCALATION_MAX_AFTER_MINUTES = 60 * 24 * 7; // 7 days
-export const ESCALATION_MAX_CHANNEL_ID_LENGTH = 128;
+
+// Prisma's uuid() default and ParseUUIDPipe both emit v4.
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class InvalidEscalationStepsError extends Error {}
 
@@ -35,7 +39,7 @@ export function parseEscalationSteps(value: unknown): EscalationStep[] {
     );
   }
 
-  let previous = 0;
+  let previous: number | null = null;
   return value.map((raw, index) => {
     if (typeof raw !== 'object' || raw === null) {
       throw new InvalidEscalationStepsError(`step ${index} must be an object`);
@@ -53,18 +57,17 @@ export function parseEscalationSteps(value: unknown): EscalationStep[] {
         `step ${index} afterMinutes must be an integer between ${ESCALATION_MIN_AFTER_MINUTES} and ${ESCALATION_MAX_AFTER_MINUTES}`,
       );
     }
-    if (afterMinutes <= previous) {
+    if (previous !== null && afterMinutes <= previous) {
       throw new InvalidEscalationStepsError(
         `step ${index} afterMinutes must be greater than the previous step`,
       );
     }
     if (
       typeof notifyChannelId !== 'string' ||
-      notifyChannelId.length === 0 ||
-      notifyChannelId.length > ESCALATION_MAX_CHANNEL_ID_LENGTH
+      !UUID_V4_PATTERN.test(notifyChannelId)
     ) {
       throw new InvalidEscalationStepsError(
-        `step ${index} notifyChannelId must be a non-empty string of at most ${ESCALATION_MAX_CHANNEL_ID_LENGTH} characters`,
+        `step ${index} notifyChannelId must be a UUID`,
       );
     }
 

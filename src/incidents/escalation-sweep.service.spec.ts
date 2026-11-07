@@ -3,6 +3,9 @@ import { IncidentStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
 import { EscalationSweepService } from './escalation-sweep.service';
 
+const CHAN_1 = '11111111-1111-4111-8111-111111111111';
+const CHAN_2 = '22222222-2222-4222-8222-222222222222';
+
 const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
 
 const incident = (overrides: Record<string, any> = {}) => ({
@@ -13,7 +16,7 @@ const incident = (overrides: Record<string, any> = {}) => ({
   escalationStep: 0,
   monitor: {
     escalationPolicy: {
-      steps: [{ afterMinutes: 5, notifyChannelId: 'chan-1' }],
+      steps: [{ afterMinutes: 5, notifyChannelId: CHAN_1 }],
     },
   },
   ...overrides,
@@ -63,7 +66,7 @@ describe('EscalationSweepService', () => {
     );
   });
 
-  it('escalates a due incident and records the outbox event in the same transaction', async () => {
+  it('fires the first step without marking the incident escalated', async () => {
     findMany.mockResolvedValue([incident()]);
 
     await service.sweep();
@@ -75,7 +78,6 @@ describe('EscalationSweepService', () => {
         escalationStep: 0,
       },
       data: {
-        status: IncidentStatus.ESCALATED,
         escalationStep: 1,
         nextEscalationAt: null,
       },
@@ -89,10 +91,42 @@ describe('EscalationSweepService', () => {
         payload: expect.objectContaining({
           incidentId: 'inc-1',
           step: 0,
-          notifyChannelId: 'chan-1',
+          notifyChannelId: CHAN_1,
         }),
       }),
     );
+  });
+
+  it('marks the incident escalated once a later step fires', async () => {
+    findMany.mockResolvedValue([
+      incident({
+        startedAt: minutesAgo(20),
+        escalationStep: 1,
+        monitor: {
+          escalationPolicy: {
+            steps: [
+              { afterMinutes: 5, notifyChannelId: CHAN_1 },
+              { afterMinutes: 10, notifyChannelId: CHAN_2 },
+            ],
+          },
+        },
+      }),
+    ]);
+
+    await service.sweep();
+
+    expect(txUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'inc-1',
+        status: { in: [IncidentStatus.OPEN, IncidentStatus.ESCALATED] },
+        escalationStep: 1,
+      },
+      data: {
+        status: IncidentStatus.ESCALATED,
+        escalationStep: 2,
+        nextEscalationAt: null,
+      },
+    });
   });
 
   it('schedules the next step deadline when more steps remain', async () => {
@@ -103,8 +137,8 @@ describe('EscalationSweepService', () => {
         monitor: {
           escalationPolicy: {
             steps: [
-              { afterMinutes: 5, notifyChannelId: 'chan-1' },
-              { afterMinutes: 10, notifyChannelId: 'chan-2' },
+              { afterMinutes: 5, notifyChannelId: CHAN_1 },
+              { afterMinutes: 10, notifyChannelId: CHAN_2 },
             ],
           },
         },
@@ -138,7 +172,7 @@ describe('EscalationSweepService', () => {
         startedAt,
         monitor: {
           escalationPolicy: {
-            steps: [{ afterMinutes: 60, notifyChannelId: 'chan-1' }],
+            steps: [{ afterMinutes: 60, notifyChannelId: CHAN_1 }],
           },
         },
       }),
