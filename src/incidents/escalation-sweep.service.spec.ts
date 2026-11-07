@@ -1,0 +1,207 @@
+import 'reflect-metadata';
+import { IncidentStatus } from '../../generated/prisma/client';
+import { PrismaService } from '../prisma.service';
+import { EscalationSweepService } from './escalation-sweep.service';
+
+const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
+
+const incident = (overrides: Record<string, any> = {}) => ({
+  id: 'inc-1',
+  monitorId: 'mon-1',
+  cause: 'http_5xx',
+  startedAt: minutesAgo(10),
+  escalationStep: 0,
+  monitor: {
+    escalationPolicy: {
+      steps: [{ afterMinutes: 5, notifyChannelId: 'chan-1' }],
+    },
+  },
+  ...overrides,
+});
+
+describe('EscalationSweepService', () => {
+  let service: EscalationSweepService;
+  let findMany: jest.Mock;
+  let updateMany: jest.Mock;
+  let txUpdateMany: jest.Mock;
+  let createEvent: jest.Mock;
+  let transaction: jest.Mock;
+  let logger: { log: jest.Mock; warn: jest.Mock; error: jest.Mock };
+
+  beforeEach(() => {
+    findMany = jest.fn().mockResolvedValue([]);
+    updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    txUpdateMany = jest.fn().mockResolvedValue({ count: 1 });
+    createEvent = jest.fn().mockResolvedValue(undefined);
+    transaction = jest.fn((cb: (tx: unknown) => unknown) =>
+      cb({ incident: { updateMany: txUpdateMany } }),
+    );
+
+    service = new EscalationSweepService(
+      {
+        incident: { findMany, updateMany },
+        $transaction: transaction,
+      } as unknown as PrismaService,
+      { createEvent },
+    );
+
+    logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    (service as any).logger = logger;
+  });
+
+  it('selects only open incidents whose deadline has passed', async () => {
+    await service.sweep();
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          status: { in: [IncidentStatus.OPEN, IncidentStatus.ESCALATED] },
+          nextEscalationAt: { not: null, lte: expect.any(Date) },
+        },
+        take: 100,
+      }),
+    );
+  });
+
+  it('escalates a due incident and records the outbox event in the same transaction', async () => {
+    findMany.mockResolvedValue([incident()]);
+
+    await service.sweep();
+
+    expect(txUpdateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'inc-1',
+        status: { in: [IncidentStatus.OPEN, IncidentStatus.ESCALATED] },
+        escalationStep: 0,
+      },
+      data: {
+        status: IncidentStatus.ESCALATED,
+        escalationStep: 1,
+        nextEscalationAt: null,
+      },
+    });
+    expect(createEvent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        aggregateType: 'incident',
+        aggregateId: 'inc-1',
+        eventType: 'incident-escalated',
+        payload: expect.objectContaining({
+          incidentId: 'inc-1',
+          step: 0,
+          notifyChannelId: 'chan-1',
+        }),
+      }),
+    );
+  });
+
+  it('schedules the next step deadline when more steps remain', async () => {
+    const startedAt = minutesAgo(10);
+    findMany.mockResolvedValue([
+      incident({
+        startedAt,
+        monitor: {
+          escalationPolicy: {
+            steps: [
+              { afterMinutes: 5, notifyChannelId: 'chan-1' },
+              { afterMinutes: 10, notifyChannelId: 'chan-2' },
+            ],
+          },
+        },
+      }),
+    ]);
+
+    await service.sweep();
+
+    const expected = new Date(startedAt.getTime() + 10 * 60_000);
+    expect(txUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ nextEscalationAt: expected }),
+      }),
+    );
+  });
+
+  it('does not escalate when another writer won the race', async () => {
+    findMany.mockResolvedValue([incident()]);
+    txUpdateMany.mockResolvedValue({ count: 0 });
+
+    await service.sweep();
+
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(logger.log).not.toHaveBeenCalled();
+  });
+
+  it('defers instead of firing early when the policy was edited', async () => {
+    const startedAt = minutesAgo(10);
+    findMany.mockResolvedValue([
+      incident({
+        startedAt,
+        monitor: {
+          escalationPolicy: {
+            steps: [{ afterMinutes: 60, notifyChannelId: 'chan-1' }],
+          },
+        },
+      }),
+    ]);
+
+    await service.sweep();
+
+    const expected = new Date(startedAt.getTime() + 60 * 60_000);
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'inc-1',
+        status: { in: [IncidentStatus.OPEN, IncidentStatus.ESCALATED] },
+        escalationStep: 0,
+      },
+      data: { nextEscalationAt: expected },
+    });
+    expect(transaction).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no policy', null],
+    ['malformed steps', { steps: [{ afterMinutes: 0 }] }],
+  ])('clears the deadline when the monitor has %s', async (_label, policy) => {
+    findMany.mockResolvedValue([
+      incident({ monitor: { escalationPolicy: policy } }),
+    ]);
+
+    await service.sweep();
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'inc-1',
+        status: { in: [IncidentStatus.OPEN, IncidentStatus.ESCALATED] },
+      },
+      data: { nextEscalationAt: null },
+    });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('clears the deadline when the policy shrank below the current step', async () => {
+    findMany.mockResolvedValue([incident({ escalationStep: 3 })]);
+
+    await service.sweep();
+
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { nextEscalationAt: null } }),
+    );
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('keeps processing the batch when one incident throws', async () => {
+    findMany.mockResolvedValue([
+      incident({ id: 'inc-1' }),
+      incident({ id: 'inc-2' }),
+    ]);
+    txUpdateMany
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockResolvedValueOnce({ count: 1 });
+
+    await service.sweep();
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(createEvent).toHaveBeenCalledTimes(1);
+  });
+});

@@ -13,6 +13,7 @@ import { NotificationModule } from './notification/notification.module';
 import { OutboxModule } from './outbox/outbox.module';
 import { MonitorsModule } from './monitors/monitors.module';
 import { IncidentsModule } from './incidents/incidents.module';
+import { EscalationPoliciesModule } from './escalation-policies/escalation-policies.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { IncidentsModule } from './incidents/incidents.module';
     AuthModule,
     MonitorsModule,
     IncidentsModule,
+    EscalationPoliciesModule,
   ],
   controllers: [AppController],
   providers: [

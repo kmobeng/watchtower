@@ -85,6 +85,19 @@ export class OutboxPoller {
           newEmail: event.payload.email,
         });
         break;
+      case 'incident-escalated':
+        // Channel delivery lands with the notification-channels step. Until
+        // then the event is durable and observable rather than silently lost.
+        this.logger.log(
+          {
+            incidentId: event.payload.incidentId,
+            monitorId: event.payload.monitorId,
+            step: event.payload.step,
+            notifyChannelId: event.payload.notifyChannelId,
+          },
+          'Incident escalated (channel delivery pending)',
+        );
+        break;
       default:
         this.logger.warn(
           { eventType },

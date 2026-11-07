@@ -22,6 +22,7 @@ describe('OutboxPoller', () => {
   let enqueueEmailChangeNotice: jest.Mock;
   let loggerWarn: jest.Mock;
   let loggerError: jest.Mock;
+  let loggerLog: jest.Mock;
 
   beforeEach(() => {
     findMany = jest.fn().mockResolvedValue([]);
@@ -43,7 +44,12 @@ describe('OutboxPoller', () => {
 
     loggerWarn = jest.fn();
     loggerError = jest.fn();
-    (poller as any).logger = { warn: loggerWarn, error: loggerError };
+    loggerLog = jest.fn();
+    (poller as any).logger = {
+      log: loggerLog,
+      warn: loggerWarn,
+      error: loggerError,
+    };
   });
 
   it('queries unprocessed events oldest-first in batches of 50', async () => {
@@ -196,6 +202,37 @@ describe('OutboxPoller', () => {
     await poller.dispatchOutboxEvents();
 
     expect(loggerWarn).toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'event-1' },
+      data: { processedAt: expect.any(Date) },
+    });
+  });
+
+  it('records incident-escalated events as processed while channel delivery is pending', async () => {
+    findMany.mockResolvedValue([
+      makeEvent({
+        eventType: 'incident-escalated',
+        aggregateType: 'incident',
+        aggregateId: 'inc-1',
+        payload: {
+          incidentId: 'inc-1',
+          monitorId: 'mon-1',
+          step: 0,
+          notifyChannelId: 'chan-1',
+        },
+      }),
+    ]);
+
+    await poller.dispatchOutboxEvents();
+
+    expect(loggerLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        incidentId: 'inc-1',
+        step: 0,
+        notifyChannelId: 'chan-1',
+      }),
+      expect.any(String),
+    );
     expect(update).toHaveBeenCalledWith({
       where: { id: 'event-1' },
       data: { processedAt: expect.any(Date) },

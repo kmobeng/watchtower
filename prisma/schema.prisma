@@ -25,19 +25,20 @@ enum IncidentStatus {
 }
 
 model User {
-  id                String   @id @default(uuid())
-  email             String   @unique
+  id                String    @id @default(uuid())
+  email             String    @unique
   name              String?
   password          String
-  role              Role     @default(USER)
-  provider          String?  @default("local")
-  isEmailVerified   Boolean  @default(false)
+  role              Role      @default(USER)
+  provider          String?   @default("local")
+  isEmailVerified   Boolean   @default(false)
   passwordChangedAt DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
-  refreshTokens RefreshToken[]
-  monitors      Monitor[]
+  refreshTokens      RefreshToken[]
+  monitors           Monitor[]
+  escalationPolicies EscalationPolicy[]
 }
 
 model OutboxEvent {
@@ -63,21 +64,24 @@ model RefreshToken {
 }
 
 model Monitor {
-  id               String     @id @default(uuid())
-  userId           String     @map("user_id")
-  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  url              String
-  method           HttpMethod @default(GET)
-  intervalSeconds  Int        @map("interval_seconds")
-  timeoutMs        Int        @default(10000) @map("timeout_ms")
-  failureThreshold Int        @default(3) @map("failure_threshold")
-  createdAt        DateTime   @default(now()) @map("created_at")
-  updatedAt        DateTime   @updatedAt @map("updated_at")
-  checks           Check[]
-  incidents        Incident[]
+  id                 String            @id @default(uuid())
+  userId             String            @map("user_id")
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  escalationPolicyId String?           @map("escalation_policy_id")
+  escalationPolicy   EscalationPolicy? @relation(fields: [escalationPolicyId], references: [id], onDelete: SetNull)
+  url                String
+  method             HttpMethod        @default(GET)
+  intervalSeconds    Int               @map("interval_seconds")
+  timeoutMs          Int               @default(10000) @map("timeout_ms")
+  failureThreshold   Int               @default(3) @map("failure_threshold")
+  createdAt          DateTime          @default(now()) @map("created_at")
+  updatedAt          DateTime          @updatedAt @map("updated_at")
+  checks             Check[]
+  incidents          Incident[]
 
   @@unique([userId, url])
   @@index([userId])
+  @@index([escalationPolicyId])
   @@map("monitors")
 }
 
@@ -98,17 +102,37 @@ model Check {
 }
 
 model Incident {
-  id              String         @id @default(uuid())
-  monitorId       String         @map("monitor_id")
-  monitor         Monitor        @relation(fields: [monitorId], references: [id], onDelete: Cascade)
-  status          IncidentStatus @default(OPEN)
-  cause           String
-  openedByCheckId String?        @map("opened_by_check_id")
-  closedByCheckId String?        @map("closed_by_check_id")
-  startedAt       DateTime       @default(now()) @map("started_at")
-  resolvedAt      DateTime?      @map("resolved_at")
-  downtimeSeconds Int?           @map("downtime_seconds")
+  id               String         @id @default(uuid())
+  monitorId        String         @map("monitor_id")
+  monitor          Monitor        @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  status           IncidentStatus @default(OPEN)
+  cause            String
+  openedByCheckId  String?        @map("opened_by_check_id")
+  closedByCheckId  String?        @map("closed_by_check_id")
+  startedAt        DateTime       @default(now()) @map("started_at")
+  acknowledgedAt   DateTime?      @map("acknowledged_at")
+  resolvedAt       DateTime?      @map("resolved_at")
+  downtimeSeconds  Int?           @map("downtime_seconds")
+  escalationStep   Int            @default(0) @map("escalation_step")
+  nextEscalationAt DateTime?      @map("next_escalation_at")
 
   @@index([monitorId, startedAt(sort: Desc)])
+  @@index([status, nextEscalationAt])
   @@map("incidents")
+}
+
+model EscalationPolicy {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  // Ordered steps: [{ afterMinutes: number, notifyChannelId: string }]
+  steps     Json
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  monitors Monitor[]
+
+  @@index([userId])
+  @@map("escalation_policies")
 }

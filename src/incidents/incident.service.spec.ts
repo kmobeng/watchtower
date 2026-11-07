@@ -1,12 +1,6 @@
 import 'reflect-metadata';
-import {
-  ConflictException,
-  NotFoundException,
-} from '@nestjs/common';
-import {
-  IncidentStatus,
-  Prisma,
-} from '../../generated/prisma/client';
+import { ConflictException, NotFoundException } from '@nestjs/common';
+import { IncidentStatus, Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
 import { IncidentService, deriveCause } from './incident.service';
 
@@ -16,11 +10,14 @@ describe('IncidentService', () => {
     incident: {
       findFirst: jest.Mock;
       findUnique: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
       create: jest.Mock;
       update: jest.Mock;
+      updateMany: jest.Mock;
       findMany: jest.Mock;
       count: jest.Mock;
     };
+    monitor: { findUnique: jest.Mock };
     $transaction: jest.Mock;
   };
 
@@ -36,11 +33,14 @@ describe('IncidentService', () => {
       incident: {
         findFirst: jest.fn(),
         findUnique: jest.fn(),
+        findUniqueOrThrow: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+        updateMany: jest.fn(),
         findMany: jest.fn(),
         count: jest.fn(),
       },
+      monitor: { findUnique: jest.fn().mockResolvedValue(null) },
       $transaction: jest.fn((promises: Promise<unknown>[]) =>
         Promise.all(promises),
       ),
@@ -65,9 +65,53 @@ describe('IncidentService', () => {
           status: IncidentStatus.OPEN,
           cause: 'http_5xx',
           openedByCheckId: 'check-1',
+          startedAt: expect.any(Date),
+          nextEscalationAt: null,
         },
       });
       expect(result).toEqual({ id: 'inc-1' });
+    });
+
+    it('sets the first escalation deadline when the monitor has a policy', async () => {
+      prisma.incident.findFirst.mockResolvedValue(null);
+      prisma.monitor.findUnique.mockResolvedValue({
+        escalationPolicy: {
+          steps: [{ afterMinutes: 5, notifyChannelId: 'chan-1' }],
+        },
+      });
+      prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
+
+      await service.handleVerdict(
+        'mon-1',
+        { state: 'down', consecutiveFailures: 3 },
+        check,
+      );
+
+      const { startedAt, nextEscalationAt } =
+        prisma.incident.create.mock.calls[0][0].data;
+      expect(startedAt).toBeInstanceOf(Date);
+      expect(nextEscalationAt).toBeInstanceOf(Date);
+      expect(nextEscalationAt.getTime() - startedAt.getTime()).toBe(5 * 60_000);
+    });
+
+    it('ignores a malformed policy instead of blocking the open', async () => {
+      prisma.incident.findFirst.mockResolvedValue(null);
+      prisma.monitor.findUnique.mockResolvedValue({
+        escalationPolicy: { steps: [{ afterMinutes: 0 }] },
+      });
+      prisma.incident.create.mockResolvedValue({ id: 'inc-1' });
+
+      await service.handleVerdict(
+        'mon-1',
+        { state: 'down', consecutiveFailures: 3 },
+        check,
+      );
+
+      expect(prisma.incident.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ nextEscalationAt: null }),
+        }),
+      );
     });
 
     it('does not double-open when one is already open', async () => {
@@ -125,6 +169,7 @@ describe('IncidentService', () => {
         data: expect.objectContaining({
           status: IncidentStatus.RESOLVED,
           closedByCheckId: 'check-9',
+          nextEscalationAt: null,
         }),
       });
       expect(result?.downtimeSeconds).toBeGreaterThanOrEqual(124);
@@ -152,7 +197,9 @@ describe('IncidentService', () => {
           check,
         ),
       ).resolves.toBeNull();
-      await expect(service.handleVerdict('mon-1', null, check)).resolves.toBeNull();
+      await expect(
+        service.handleVerdict('mon-1', null, check),
+      ).resolves.toBeNull();
       expect(prisma.incident.findFirst).not.toHaveBeenCalled();
       expect(prisma.incident.create).not.toHaveBeenCalled();
     });
@@ -182,35 +229,59 @@ describe('IncidentService', () => {
       monitor: { userId: 'user-1' },
     };
 
-    it('acknowledges an open incident', async () => {
+    it('acknowledges an open incident and stops escalation', async () => {
       prisma.incident.findUnique.mockResolvedValue(openIncident);
-      prisma.incident.update.mockResolvedValue({
+      prisma.incident.updateMany.mockResolvedValue({ count: 1 });
+      prisma.incident.findUniqueOrThrow.mockResolvedValue({
         ...openIncident,
         status: IncidentStatus.ACKNOWLEDGED,
       });
 
       const result = await service.acknowledge('user-1', 'inc-1');
 
-      expect(prisma.incident.update).toHaveBeenCalledWith({
-        where: { id: 'inc-1' },
-        data: { status: IncidentStatus.ACKNOWLEDGED },
+      expect(prisma.incident.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'inc-1',
+          status: { in: [IncidentStatus.OPEN, IncidentStatus.ESCALATED] },
+        },
+        data: {
+          status: IncidentStatus.ACKNOWLEDGED,
+          acknowledgedAt: expect.any(Date),
+          nextEscalationAt: null,
+        },
       });
       expect(result.status).toBe(IncidentStatus.ACKNOWLEDGED);
     });
 
+    it('acknowledges an already escalated incident', async () => {
+      prisma.incident.findUnique.mockResolvedValue({
+        ...openIncident,
+        status: IncidentStatus.ESCALATED,
+      });
+      prisma.incident.updateMany.mockResolvedValue({ count: 1 });
+      prisma.incident.findUniqueOrThrow.mockResolvedValue({
+        ...openIncident,
+        status: IncidentStatus.ACKNOWLEDGED,
+      });
+
+      await expect(
+        service.acknowledge('user-1', 'inc-1'),
+      ).resolves.toMatchObject({ status: IncidentStatus.ACKNOWLEDGED });
+    });
+
     it('404s on missing or foreign incidents', async () => {
       prisma.incident.findUnique.mockResolvedValueOnce(null);
-      await expect(service.acknowledge('user-1', 'nope')).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.acknowledge('user-1', 'nope'),
+      ).rejects.toBeInstanceOf(NotFoundException);
 
       prisma.incident.findUnique.mockResolvedValueOnce({
         ...openIncident,
         monitor: { userId: 'user-2' },
       });
-      await expect(service.acknowledge('user-1', 'inc-1')).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.acknowledge('user-1', 'inc-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it.each([IncidentStatus.ACKNOWLEDGED, IncidentStatus.RESOLVED])(
@@ -220,6 +291,8 @@ describe('IncidentService', () => {
           ...openIncident,
           status,
         });
+        prisma.incident.updateMany.mockResolvedValue({ count: 0 });
+
         await expect(
           service.acknowledge('user-1', 'inc-1'),
         ).rejects.toBeInstanceOf(ConflictException);

@@ -39,6 +39,10 @@ export class MonitorsService {
       dto.timeoutMs ?? 10000,
     );
 
+    if (dto.escalationPolicyId) {
+      await this.assertEscalationPolicyOwned(userId, dto.escalationPolicyId);
+    }
+
     const monitor = await this.prisma.monitor.create({
       data: {
         userId,
@@ -46,6 +50,9 @@ export class MonitorsService {
         intervalSeconds: dto.intervalSeconds,
         timeoutMs: dto.timeoutMs ?? 10000,
         failureThreshold: dto.failureThreshold ?? 3,
+        ...(dto.escalationPolicyId
+          ? { escalationPolicyId: dto.escalationPolicyId }
+          : {}),
       },
     });
 
@@ -130,6 +137,10 @@ export class MonitorsService {
       return existing;
     }
 
+    if (dto.escalationPolicyId) {
+      await this.assertEscalationPolicyOwned(userId, dto.escalationPolicyId);
+    }
+
     const updated = await this.prisma.monitor.update({
       where: { id: existing.id },
       data: {
@@ -140,6 +151,9 @@ export class MonitorsService {
         ...(dto.timeoutMs !== undefined ? { timeoutMs: dto.timeoutMs } : {}),
         ...(dto.failureThreshold !== undefined
           ? { failureThreshold: dto.failureThreshold }
+          : {}),
+        ...(dto.escalationPolicyId !== undefined
+          ? { escalationPolicyId: dto.escalationPolicyId }
           : {}),
       },
     });
@@ -193,6 +207,20 @@ export class MonitorsService {
       throw new BadRequestException(
         'Timeout must be less than the check interval',
       );
+    }
+  }
+
+  private async assertEscalationPolicyOwned(
+    userId: string,
+    policyId: string,
+  ): Promise<void> {
+    const policy = await this.prisma.escalationPolicy.findFirst({
+      where: { id: policyId, userId },
+      select: { id: true },
+    });
+
+    if (!policy) {
+      throw new NotFoundException('Escalation policy not found');
     }
   }
 }

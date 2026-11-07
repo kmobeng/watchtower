@@ -1,4 +1,4 @@
-import { ServiceUnavailableException } from '@nestjs/common';
+import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { MonitorsService } from './monitors.service';
 import { PrismaService } from '../prisma.service';
 import { CheckSchedulerService } from '../checks/check-scheduler.service';
@@ -195,5 +195,97 @@ describe('MonitorsService scheduling', () => {
     scheduler.unschedule.mockRejectedValue(new Error('Redis down'));
 
     await expect(service.remove('user-1', 'mon-1')).resolves.toBeUndefined();
+  });
+});
+
+describe('MonitorsService escalation policies', () => {
+  let service: MonitorsService;
+  let prisma: {
+    monitor: {
+      create: jest.Mock;
+      findFirst: jest.Mock;
+      update: jest.Mock;
+    };
+    escalationPolicy: { findFirst: jest.Mock };
+  };
+  let scheduler: {
+    schedule: jest.Mock;
+    unschedule: jest.Mock;
+  };
+
+  const monitor = {
+    id: 'mon-1',
+    userId: 'user-1',
+    url: 'https://example.com/health',
+    intervalSeconds: 300,
+    timeoutMs: 10000,
+    failureThreshold: 3,
+    escalationPolicyId: null,
+  };
+
+  beforeEach(() => {
+    prisma = {
+      monitor: {
+        create: jest.fn().mockResolvedValue(monitor),
+        findFirst: jest.fn().mockResolvedValue(monitor),
+        update: jest.fn().mockResolvedValue(monitor),
+      },
+      escalationPolicy: { findFirst: jest.fn() },
+    };
+    scheduler = { schedule: jest.fn(), unschedule: jest.fn() };
+    service = new MonitorsService(
+      prisma as unknown as PrismaService,
+      scheduler as unknown as CheckSchedulerService,
+    );
+  });
+
+  it('attaches a policy the user owns on create', async () => {
+    prisma.escalationPolicy.findFirst.mockResolvedValue({ id: 'pol-1' });
+
+    await service.create('user-1', {
+      url: monitor.url,
+      intervalSeconds: 300,
+      escalationPolicyId: 'pol-1',
+    });
+
+    expect(prisma.escalationPolicy.findFirst).toHaveBeenCalledWith({
+      where: { id: 'pol-1', userId: 'user-1' },
+      select: { id: true },
+    });
+    expect(prisma.monitor.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ escalationPolicyId: 'pol-1' }),
+    });
+  });
+
+  it('refuses to attach a missing or foreign policy on create', async () => {
+    prisma.escalationPolicy.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.create('user-1', {
+        url: monitor.url,
+        intervalSeconds: 300,
+        escalationPolicyId: 'pol-foreign',
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.monitor.create).not.toHaveBeenCalled();
+  });
+
+  it('clears the policy without an ownership lookup', async () => {
+    await service.update('user-1', 'mon-1', { escalationPolicyId: null });
+
+    expect(prisma.escalationPolicy.findFirst).not.toHaveBeenCalled();
+    expect(prisma.monitor.update).toHaveBeenCalledWith({
+      where: { id: 'mon-1' },
+      data: expect.objectContaining({ escalationPolicyId: null }),
+    });
+  });
+
+  it('refuses to attach a foreign policy on update', async () => {
+    prisma.escalationPolicy.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.update('user-1', 'mon-1', { escalationPolicyId: 'pol-foreign' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.monitor.update).not.toHaveBeenCalled();
   });
 });

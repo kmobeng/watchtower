@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -43,4 +44,8 @@ export class UpdateMonitorDto {
   @Min(1, { message: 'Failure threshold must be at least 1' })
   @Max(10, { message: 'Failure threshold must be at most 10' })
   failureThreshold?: number;
+
+  @IsOptional()
+  @IsUUID('4', { message: 'Escalation policy ID must be a valid UUID' })
+  escalationPolicyId?: string | null;
 }

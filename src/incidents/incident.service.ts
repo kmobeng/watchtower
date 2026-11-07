@@ -16,6 +16,10 @@ import {
   MONITORS_MAX_LIMIT,
 } from '../monitors/dto/list-monitors.dto';
 import type { StreakEvaluation } from '../checks/check-streak';
+import {
+  escalationDeadline,
+  tryParseEscalationSteps,
+} from '../escalation-policies/escalation-steps';
 
 export const OPEN_STATUSES: IncidentStatus[] = [
   IncidentStatus.OPEN,
@@ -39,19 +43,9 @@ export interface PaginatedIncidents {
 }
 
 /**
- * Guarded transitions. Anything not listed throws ConflictException (409):
- * the state machine moves forward only, and RESOLVED is terminal.
+ * Acknowledge moves OPEN or ESCALATED to ACKNOWLEDGED atomically; RESOLVED is
+ * terminal. See `acknowledge` for the conditional write that enforces it.
  */
-const ALLOWED_TRANSITIONS: Record<IncidentStatus, IncidentStatus[]> = {
-  [IncidentStatus.OPEN]: [IncidentStatus.ACKNOWLEDGED, IncidentStatus.RESOLVED],
-  [IncidentStatus.ACKNOWLEDGED]: [IncidentStatus.RESOLVED],
-  [IncidentStatus.ESCALATED]: [
-    IncidentStatus.ACKNOWLEDGED,
-    IncidentStatus.RESOLVED,
-  ],
-  [IncidentStatus.RESOLVED]: [],
-};
-
 @Injectable()
 export class IncidentService {
   private readonly logger = new Logger(IncidentService.name);
@@ -89,7 +83,30 @@ export class IncidentService {
       throw new NotFoundException('Incident not found');
     }
 
-    return this.transition(incident, IncidentStatus.ACKNOWLEDGED);
+    const result = await this.prisma.incident.updateMany({
+      where: {
+        id: incident.id,
+        // Only an unacknowledged incident can be acknowledged. The status is
+        // part of the write, so a concurrent escalation cannot win the race
+        // and resurrect an incident the user just acknowledged.
+        status: { in: [IncidentStatus.OPEN, IncidentStatus.ESCALATED] },
+      },
+      data: {
+        status: IncidentStatus.ACKNOWLEDGED,
+        acknowledgedAt: new Date(),
+        nextEscalationAt: null,
+      },
+    });
+
+    if (result.count === 0) {
+      throw new ConflictException(
+        `Cannot transition incident from ${incident.status} to ${IncidentStatus.ACKNOWLEDGED}`,
+      );
+    }
+
+    return this.prisma.incident.findUniqueOrThrow({
+      where: { id: incident.id },
+    });
   }
 
   async findAll(
@@ -137,6 +154,12 @@ export class IncidentService {
     });
     if (existing) return existing;
 
+    const startedAt = new Date();
+    const nextEscalationAt = await this.firstEscalationDeadline(
+      monitorId,
+      startedAt,
+    );
+
     try {
       const incident = await this.prisma.incident.create({
         data: {
@@ -144,6 +167,8 @@ export class IncidentService {
           status: IncidentStatus.OPEN,
           cause: deriveCause(check),
           openedByCheckId: check.id,
+          startedAt,
+          nextEscalationAt,
         },
       });
       this.logger.log(
@@ -189,6 +214,9 @@ export class IncidentService {
           ),
         ),
         closedByCheckId: checkId,
+        // Resolution ends the escalation chain; the sweep also filters on
+        // open status, so this is defence in depth.
+        nextEscalationAt: null,
       },
     });
     this.logger.log(
@@ -202,19 +230,20 @@ export class IncidentService {
     return incident;
   }
 
-  private async transition(
-    incident: Incident,
-    to: IncidentStatus,
-  ): Promise<Incident> {
-    if (!ALLOWED_TRANSITIONS[incident.status].includes(to)) {
-      throw new ConflictException(
-        `Cannot transition incident from ${incident.status} to ${to}`,
-      );
-    }
-    return this.prisma.incident.update({
-      where: { id: incident.id },
-      data: { status: to },
+  private async firstEscalationDeadline(
+    monitorId: string,
+    startedAt: Date,
+  ): Promise<Date | null> {
+    const monitor = await this.prisma.monitor.findUnique({
+      where: { id: monitorId },
+      select: { escalationPolicy: { select: { steps: true } } },
     });
+
+    const steps = monitor?.escalationPolicy
+      ? tryParseEscalationSteps(monitor.escalationPolicy.steps)
+      : null;
+
+    return steps ? escalationDeadline(startedAt, steps, 0) : null;
   }
 }
 
