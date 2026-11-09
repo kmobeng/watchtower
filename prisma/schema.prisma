@@ -36,6 +36,11 @@ enum NotificationDeliveryStatus {
   SKIPPED
 }
 
+enum RollupGranularity {
+  HOUR
+  DAY
+}
+
 model User {
   id                String    @id @default(uuid())
   email             String    @unique
@@ -91,6 +96,7 @@ model Monitor {
   updatedAt          DateTime          @updatedAt @map("updated_at")
   checks             Check[]
   incidents          Incident[]
+  rollups            CheckRollup[]
 
   @@unique([userId, url])
   @@index([userId])
@@ -111,7 +117,28 @@ model Check {
   error          String?
 
   @@index([monitorId, region, checkedAt(sort: Desc)])
+  // Cross-monitor range scans for rollups and retention.
+  @@index([checkedAt])
   @@map("checks")
+}
+
+model CheckRollup {
+  id                  String            @id @default(uuid())
+  monitorId           String            @map("monitor_id")
+  monitor             Monitor           @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  region              String            @default("local")
+  granularity         RollupGranularity
+  bucketStart         DateTime          @map("bucket_start")
+  checkCount          Int               @map("check_count")
+  upCount             Int               @map("up_count")
+  upResponseTimeSumMs Int               @map("up_response_time_sum_ms")
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+
+  // One row per monitor, region and bucket. Upserts make recomputation idempotent.
+  @@unique([monitorId, region, granularity, bucketStart])
+  @@index([granularity, bucketStart])
+  @@map("check_rollups")
 }
 
 model Incident {

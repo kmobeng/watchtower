@@ -77,6 +77,47 @@ stops changing state for a full window, the flag expires and the escalation
 chain resumes from where it stopped. `GET /monitors` and `GET /monitors/:id`
 expose the computed `flapping` boolean.
 
+### Uptime rollups
+
+Raw checks grow without bound, so graphs read from a pre-aggregated table
+instead of scanning history. `check_rollups` stores additive counters per
+monitor, region, granularity (`HOUR`/`DAY`) and UTC bucket start: check count,
+up count, and the response-time sum of successful checks. Uptime percentage and
+average response time are derived on read, so combining regions cannot
+accumulate rounding drift.
+
+The API process recomputes the previous two completed hourly buckets at five
+minutes past each hour UTC, and the previous two completed days at 00:10 UTC.
+A Redis lock per bucket keeps multiple API instances from doing the same work;
+the upserts are idempotent, so a lost lock or a Redis outage only costs a
+duplicate computation.
+
+`GET /api/v1/monitors/:id/uptime` returns materialized buckets for the
+authenticated owner:
+
+```text
+?granularity=hour|day   defaults to hour
+&from=<ISO 8601>        defaults to 24h ago (hour) or 30d ago (day)
+&to=<ISO 8601>          defaults to now
+&region=<name>          optional; combined across regions when omitted
+```
+
+The range is capped at 1000 buckets. Buckets are aligned to UTC boundaries, and
+only buckets that have already been materialized are returned. Average response
+time covers successful checks only; uptime counts every check.
+
+Backfill existing history from the CLI (it boots no cron jobs; the npm script
+compiles the project first, then runs the compiled CLI):
+
+```bash
+# hourly buckets for the last 7 days
+$ npm run rollup:backfill -- --granularity hour
+
+# an explicit window
+$ npm run rollup:backfill -- --granularity day \
+    --from 2026-01-01T00:00:00Z --to 2026-03-01T00:00:00Z
+```
+
 ## Run tests
 
 ```bash

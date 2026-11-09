@@ -16,6 +16,7 @@ import { MonitorsModule } from './monitors/monitors.module';
 import { IncidentsModule } from './incidents/incidents.module';
 import { EscalationPoliciesModule } from './escalation-policies/escalation-policies.module';
 import { NotificationChannelsModule } from './notification-channels/notification-channels.module';
+import { RollupsModule } from './rollups/rollups.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { NotificationChannelsModule } from './notification-channels/notification
     IncidentsModule,
     EscalationPoliciesModule,
     NotificationChannelsModule,
+    RollupsModule,
   ],
   controllers: [AppController],
   providers: [

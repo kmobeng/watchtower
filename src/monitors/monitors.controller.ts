@@ -21,13 +21,18 @@ import {
   MONITORS_DEFAULT_PAGE,
   ListMonitorsDto,
 } from './dto/list-monitors.dto';
+import { GetUptimeDto } from '../rollups/dto/get-uptime.dto';
+import { RollupsService } from '../rollups/rollups.service';
 import { UpdateMonitorDto } from './dto/update-monitor.dto';
 import { MonitorsService } from './monitors.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('monitors')
 export class MonitorsController {
-  constructor(private readonly monitorsService: MonitorsService) {}
+  constructor(
+    private readonly monitorsService: MonitorsService,
+    private readonly rollups: RollupsService,
+  ) {}
 
   @Post()
   async create(
@@ -56,6 +61,16 @@ export class MonitorsController {
         totalPages: result.totalPages,
       },
     };
+  }
+
+  @Get(':id/uptime')
+  async uptime(
+    @CurrentUser() user: AccessJWTPayload,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Query() query: GetUptimeDto,
+  ) {
+    const summary = await this.rollups.getUptime(user.sub, id, query);
+    return { success: true, data: summary };
   }
 
   @Get(':id')

@@ -13,6 +13,7 @@
     "start:debug": "nest start --debug --watch",
     "start:worker": "nest start --entryFile worker",
     "start:worker:dev": "nest start --entryFile worker --watch",
+    "rollup:backfill": "npm run build && node dist/src/rollups/rollup-backfill.js",
     "start:prod": "node dist/src/main.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "jest",
