@@ -14,6 +14,7 @@ import {
 import { CheckProcessor } from '../src/checks/check.processor';
 import type { CheckLockService } from '../src/checks/check-lock.service';
 import { IncidentService } from '../src/incidents/incident.service';
+import { FlapDetectorService } from '../src/flapping/flap-detector.service';
 import type { FleetConfig } from '../src/checks/check-regions';
 
 describe('Incidents (live Postgres + Redis)', () => {
@@ -70,6 +71,7 @@ describe('Incidents (live Postgres + Redis)', () => {
         acquire: () => Promise.resolve('test-token'),
         release: () => Promise.resolve(),
       } as unknown as CheckLockService,
+      app.get(FlapDetectorService),
       {
         regions: ['local'],
         region: 'local',

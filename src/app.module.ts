@@ -8,6 +8,7 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { CustomThrottlerGuard } from './common/guards/common-throttler.guard';
 import { RedisModule } from './redis/redis.module';
+import { FlappingModule } from './flapping/flapping.module';
 import { QueueModule } from './queue/queue.module';
 import { NotificationModule } from './notification/notification.module';
 import { OutboxModule } from './outbox/outbox.module';
@@ -31,6 +32,7 @@ import { NotificationChannelsModule } from './notification-channels/notification
     }),
     ScheduleModule.forRoot(),
     RedisModule,
+    FlappingModule,
     QueueModule,
     NotificationModule,
     OutboxModule,

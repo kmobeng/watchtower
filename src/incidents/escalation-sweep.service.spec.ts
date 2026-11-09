@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { IncidentStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
+import { FlapDetectorService } from '../flapping/flap-detector.service';
 import { EscalationSweepService } from './escalation-sweep.service';
 
 const CHAN_1 = '11111111-1111-4111-8111-111111111111';
@@ -29,6 +30,7 @@ describe('EscalationSweepService', () => {
   let txUpdateMany: jest.Mock;
   let createEvent: jest.Mock;
   let transaction: jest.Mock;
+  let flaps: { isFlapping: jest.Mock };
   let logger: { log: jest.Mock; warn: jest.Mock; error: jest.Mock };
 
   beforeEach(() => {
@@ -39,6 +41,7 @@ describe('EscalationSweepService', () => {
     transaction = jest.fn((cb: (tx: unknown) => unknown) =>
       cb({ incident: { updateMany: txUpdateMany } }),
     );
+    flaps = { isFlapping: jest.fn().mockResolvedValue(false) };
 
     service = new EscalationSweepService(
       {
@@ -46,6 +49,7 @@ describe('EscalationSweepService', () => {
         $transaction: transaction,
       } as unknown as PrismaService,
       { createEvent },
+      flaps as unknown as FlapDetectorService,
     );
 
     logger = { log: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -222,6 +226,18 @@ describe('EscalationSweepService', () => {
       expect.objectContaining({ data: { nextEscalationAt: null } }),
     );
     expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('suppresses escalation while the monitor is flapping', async () => {
+    findMany.mockResolvedValue([incident()]);
+    flaps.isFlapping.mockResolvedValue(true);
+
+    await service.sweep();
+
+    expect(flaps.isFlapping).toHaveBeenCalledWith('mon-1');
+    expect(transaction).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   it('keeps processing the batch when one incident throws', async () => {

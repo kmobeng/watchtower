@@ -18,6 +18,7 @@ import { runHttpCheck } from './check-http';
 import { evaluateQuorum, freshnessWindowMs } from './check-quorum';
 import type { QuorumEvaluation, RegionSnapshot } from './check-quorum';
 import { IncidentService } from '../incidents/incident.service';
+import { FlapDetectorService } from '../flapping/flap-detector.service';
 import { PrismaService } from '../prisma.service';
 
 // Evaluated at import so the @Processor decorator can pick its region queue.
@@ -33,6 +34,7 @@ export class CheckProcessor extends WorkerHost {
     private readonly scheduler: CheckSchedulerService,
     private readonly incidents: IncidentService,
     private readonly locks: CheckLockService,
+    private readonly flaps: FlapDetectorService,
     @Inject(CHECK_FLEET_CONFIG) private readonly fleet: FleetConfig,
   ) {
     super();
@@ -173,6 +175,10 @@ export class CheckProcessor extends WorkerHost {
       },
       'Quorum evaluated',
     );
+
+    // Track the transition before incident handling so a flap that opens and
+    // closes incidents is counted consistently. 'hold' is a no-op.
+    await this.flaps.record(monitor.id, evaluation.verdict);
 
     // Incidents own what happens next: open on 'down', resolve on 'up', and
     // ignore 'hold'.

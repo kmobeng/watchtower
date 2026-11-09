@@ -67,6 +67,16 @@ early only when an attempt fails so BullMQ's retry can run.
 `CHECK_LOCK_TTL_SECONDS` (default 300) controls how long a successful claim is
 retained.
 
+### Flapping detection
+
+Each verdict is recorded in Redis as an up/down transition for its monitor. More
+than `FLAP_MAX_CHANGES` transitions (default 5) inside `FLAP_WINDOW_SECONDS`
+(default 1800) marks the monitor as flapping: the escalation sweep and outbox
+poller suppress alerts while the incident itself stays open. Once the monitor
+stops changing state for a full window, the flag expires and the escalation
+chain resumes from where it stopped. `GET /monitors` and `GET /monitors/:id`
+expose the computed `flapping` boolean.
+
 ## Run tests
 
 ```bash

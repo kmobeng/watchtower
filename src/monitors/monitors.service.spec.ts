@@ -2,6 +2,7 @@ import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { MonitorsService } from './monitors.service';
 import { PrismaService } from '../prisma.service';
 import { CheckSchedulerService } from '../checks/check-scheduler.service';
+import { FlapDetectorService } from '../flapping/flap-detector.service';
 
 describe('MonitorsService.findAll', () => {
   let service: MonitorsService;
@@ -21,6 +22,11 @@ describe('MonitorsService.findAll', () => {
     schedule: jest.Mock;
     unschedule: jest.Mock;
   };
+  let flaps: {
+    isFlapping: jest.Mock;
+    isFlappingMany: jest.Mock;
+    reset: jest.Mock;
+  };
 
   beforeEach(() => {
     prisma = {
@@ -38,9 +44,15 @@ describe('MonitorsService.findAll', () => {
       ),
     };
     scheduler = { schedule: jest.fn(), unschedule: jest.fn() };
+    flaps = {
+      isFlapping: jest.fn().mockResolvedValue(false),
+      isFlappingMany: jest.fn().mockResolvedValue(new Map()),
+      reset: jest.fn().mockResolvedValue(undefined),
+    };
     service = new MonitorsService(
       prisma as unknown as PrismaService,
       scheduler as unknown as CheckSchedulerService,
+      flaps as unknown as FlapDetectorService,
     );
   });
 
@@ -60,12 +72,34 @@ describe('MonitorsService.findAll', () => {
       where: { userId: 'user-1' },
     });
     expect(result).toEqual({
-      items: [{ id: 'a' }, { id: 'b' }],
+      items: [
+        { id: 'a', flapping: false },
+        { id: 'b', flapping: false },
+      ],
       total: 5,
       page: 2,
       limit: 2,
       totalPages: 3,
     });
+  });
+
+  it('marks flapping monitors in the list', async () => {
+    prisma.monitor.findMany.mockResolvedValue([{ id: 'a' }, { id: 'b' }]);
+    prisma.monitor.count.mockResolvedValue(2);
+    flaps.isFlappingMany.mockResolvedValue(
+      new Map([
+        ['a', true],
+        ['b', false],
+      ]),
+    );
+
+    const result = await service.findAll('user-1', 1, 20);
+
+    expect(flaps.isFlappingMany).toHaveBeenCalledWith(['a', 'b']);
+    expect(result.items).toEqual([
+      { id: 'a', flapping: true },
+      { id: 'b', flapping: false },
+    ]);
   });
 
   it('returns an empty page instead of throwing', async () => {
@@ -111,6 +145,11 @@ describe('MonitorsService scheduling', () => {
     schedule: jest.Mock;
     unschedule: jest.Mock;
   };
+  let flaps: {
+    isFlapping: jest.Mock;
+    isFlappingMany: jest.Mock;
+    reset: jest.Mock;
+  };
 
   const monitor = {
     id: 'mon-1',
@@ -132,9 +171,15 @@ describe('MonitorsService scheduling', () => {
       },
     };
     scheduler = { schedule: jest.fn(), unschedule: jest.fn() };
+    flaps = {
+      isFlapping: jest.fn().mockResolvedValue(false),
+      isFlappingMany: jest.fn().mockResolvedValue(new Map()),
+      reset: jest.fn().mockResolvedValue(undefined),
+    };
     service = new MonitorsService(
       prisma as unknown as PrismaService,
       scheduler as unknown as CheckSchedulerService,
+      flaps as unknown as FlapDetectorService,
     );
   });
 
@@ -187,6 +232,7 @@ describe('MonitorsService scheduling', () => {
 
     await service.remove('user-1', 'mon-1');
 
+    expect(flaps.reset).toHaveBeenCalledWith('mon-1');
     expect(scheduler.unschedule).toHaveBeenCalledWith('mon-1');
   });
 
@@ -212,6 +258,11 @@ describe('MonitorsService escalation policies', () => {
     schedule: jest.Mock;
     unschedule: jest.Mock;
   };
+  let flaps: {
+    isFlapping: jest.Mock;
+    isFlappingMany: jest.Mock;
+    reset: jest.Mock;
+  };
 
   const monitor = {
     id: 'mon-1',
@@ -233,9 +284,15 @@ describe('MonitorsService escalation policies', () => {
       escalationPolicy: { findFirst: jest.fn() },
     };
     scheduler = { schedule: jest.fn(), unschedule: jest.fn() };
+    flaps = {
+      isFlapping: jest.fn().mockResolvedValue(false),
+      isFlappingMany: jest.fn().mockResolvedValue(new Map()),
+      reset: jest.fn().mockResolvedValue(undefined),
+    };
     service = new MonitorsService(
       prisma as unknown as PrismaService,
       scheduler as unknown as CheckSchedulerService,
+      flaps as unknown as FlapDetectorService,
     );
   });
 

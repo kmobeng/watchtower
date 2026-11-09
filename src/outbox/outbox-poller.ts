@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { NotificationService } from '../notification/notification.service';
 import { IncidentNotificationsService } from '../incident-notifications/incident-notifications.service';
+import { FlapDetectorService } from '../flapping/flap-detector.service';
 import { PrismaService } from '../prisma.service';
 
 type OutboxEvent = {
@@ -22,6 +23,7 @@ export class OutboxPoller {
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
     private readonly incidentNotifications: IncidentNotificationsService,
+    private readonly flaps: FlapDetectorService,
   ) {}
 
   @Cron(CronExpression.EVERY_5_SECONDS)
@@ -36,7 +38,17 @@ export class OutboxPoller {
 
     for (const event of events) {
       try {
-        await this.handleEvent(event);
+        const processed = await this.handleEvent(event);
+
+        if (!processed) {
+          // Deferred, not failed: leave processedAt null so a later poll
+          // retries once the monitor stabilises.
+          this.logger.log(
+            { outboxEventId: event.id, eventType: event.eventType },
+            'Outbox event deferred',
+          );
+          continue;
+        }
 
         await this.prisma.outboxEvent.update({
           where: { id: event.id },
@@ -55,7 +67,7 @@ export class OutboxPoller {
     }
   }
 
-  private async handleEvent(event: OutboxEvent) {
+  private async handleEvent(event: OutboxEvent): Promise<boolean> {
     const eventType = event.eventType;
 
     switch (eventType) {
@@ -88,6 +100,15 @@ export class OutboxPoller {
         });
         break;
       case 'incident-escalated':
+        // Race guard: the sweep already skips flapping monitors, but an event
+        // written just before the flag appeared must not alert mid-flap.
+        if (
+          event.payload.monitorId &&
+          (await this.flaps.isFlapping(event.payload.monitorId))
+        ) {
+          return false;
+        }
+
         // The delivery row is created by the worker, not here: enqueueing is
         // cheap and the unique constraint is the actual idempotency gate.
         await this.incidentNotifications.enqueue({
@@ -102,5 +123,7 @@ export class OutboxPoller {
           `Unhandled outbox event type: ${eventType}`,
         );
     }
+
+    return true;
   }
 }

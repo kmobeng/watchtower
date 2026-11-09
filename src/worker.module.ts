@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { QueueModule } from './queue/queue.module';
 import { RedisModule } from './redis/redis.module';
+import { FlappingModule } from './flapping/flapping.module';
 import { CheckWorkerModule } from './checks/check-worker.module';
 import { loadWorkerFleetConfig } from './checks/check-regions';
 
@@ -13,6 +14,7 @@ import { loadWorkerFleetConfig } from './checks/check-regions';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     RedisModule,
+    FlappingModule,
     QueueModule,
     CheckWorkerModule.forRoot(loadWorkerFleetConfig(process.env)),
   ],

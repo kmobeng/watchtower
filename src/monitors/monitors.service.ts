@@ -8,6 +8,7 @@ import {
 import { Monitor } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
 import { CheckSchedulerService } from '../checks/check-scheduler.service';
+import { FlapDetectorService } from '../flapping/flap-detector.service';
 import { CreateMonitorDto } from './dto/create-monitor.dto';
 import {
   MONITORS_DEFAULT_LIMIT,
@@ -16,8 +17,10 @@ import {
 } from './dto/list-monitors.dto';
 import { UpdateMonitorDto } from './dto/update-monitor.dto';
 
+export type MonitorWithFlapping = Monitor & { flapping: boolean };
+
 export interface PaginatedMonitors {
-  items: Monitor[];
+  items: MonitorWithFlapping[];
   total: number;
   page: number;
   limit: number;
@@ -31,9 +34,13 @@ export class MonitorsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly scheduler: CheckSchedulerService,
+    private readonly flaps: FlapDetectorService,
   ) {}
 
-  async create(userId: string, dto: CreateMonitorDto): Promise<Monitor> {
+  async create(
+    userId: string,
+    dto: CreateMonitorDto,
+  ): Promise<MonitorWithFlapping> {
     this.assertTimeoutWithinInterval(
       dto.intervalSeconds,
       dto.timeoutMs ?? 10000,
@@ -70,7 +77,7 @@ export class MonitorsService {
       );
     }
 
-    return monitor;
+    return { ...monitor, flapping: false };
   }
 
   async findAll(
@@ -95,8 +102,15 @@ export class MonitorsService {
       this.prisma.monitor.count({ where: { userId } }),
     ]);
 
+    const flapping = await this.flaps.isFlappingMany(
+      items.map((item) => item.id),
+    );
+
     return {
-      items,
+      items: items.map((item) => ({
+        ...item,
+        flapping: flapping.get(item.id) ?? false,
+      })),
       total,
       page: safePage,
       limit: safeLimit,
@@ -104,7 +118,7 @@ export class MonitorsService {
     };
   }
 
-  async findOne(userId: string, id: string): Promise<Monitor> {
+  async findOne(userId: string, id: string): Promise<MonitorWithFlapping> {
     const monitor = await this.prisma.monitor.findFirst({
       where: { id, userId },
     });
@@ -113,14 +127,14 @@ export class MonitorsService {
       throw new NotFoundException('Monitor not found');
     }
 
-    return monitor;
+    return { ...monitor, flapping: await this.flaps.isFlapping(monitor.id) };
   }
 
   async update(
     userId: string,
     id: string,
     dto: UpdateMonitorDto,
-  ): Promise<Monitor> {
+  ): Promise<MonitorWithFlapping> {
     const existing = await this.prisma.monitor.findFirst({
       where: { id, userId },
     });
@@ -134,7 +148,10 @@ export class MonitorsService {
     this.assertTimeoutWithinInterval(nextInterval, nextTimeout);
 
     if (Object.keys(dto).length === 0) {
-      return existing;
+      return {
+        ...existing,
+        flapping: await this.flaps.isFlapping(existing.id),
+      };
     }
 
     if (dto.escalationPolicyId) {
@@ -177,7 +194,7 @@ export class MonitorsService {
       }
     }
 
-    return updated;
+    return { ...updated, flapping: await this.flaps.isFlapping(updated.id) };
   }
 
   async remove(userId: string, id: string): Promise<void> {
@@ -188,6 +205,8 @@ export class MonitorsService {
     if (result.count === 0) {
       throw new NotFoundException('Monitor not found');
     }
+
+    await this.flaps.reset(id);
 
     try {
       await this.scheduler.unschedule(id);

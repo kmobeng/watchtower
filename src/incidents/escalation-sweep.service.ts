@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { IncidentStatus } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma.service';
 import { OutboxService } from '../outbox/outbox.service';
+import { FlapDetectorService } from '../flapping/flap-detector.service';
 import {
   escalationDeadline,
   tryParseEscalationSteps,
@@ -26,6 +27,7 @@ export class EscalationSweepService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
+    private readonly flaps: FlapDetectorService,
   ) {}
 
   @Cron('*/15 * * * * *') // Every 15 seconds for now, until we have a better idea of the load.
@@ -46,6 +48,16 @@ export class EscalationSweepService {
 
     for (const incident of due) {
       try {
+        if (await this.flaps.isFlapping(incident.monitorId)) {
+          // Keep the incident and its deadline: once the monitor stabilises
+          // the next tick resumes the chain from where it stopped.
+          this.logger.log(
+            { incidentId: incident.id, monitorId: incident.monitorId },
+            'Monitor is flapping, suppressing escalation',
+          );
+          continue;
+        }
+
         await this.escalate(incident);
       } catch (error) {
         // One bad incident must not stop the rest of the batch.

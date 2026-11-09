@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma.service';
 import { CheckSchedulerService } from './check-scheduler.service';
 import { IncidentService } from '../incidents/incident.service';
 import { CheckLockService } from './check-lock.service';
+import { FlapDetectorService } from '../flapping/flap-detector.service';
 import type { FleetConfig } from './check-regions';
 
 describe('CheckProcessor', () => {
@@ -16,6 +17,7 @@ describe('CheckProcessor', () => {
   let scheduler: { unschedule: jest.Mock };
   let incidents: { handleVerdict: jest.Mock };
   let locks: { acquire: jest.Mock; release: jest.Mock };
+  let flaps: { record: jest.Mock };
 
   const fleet: FleetConfig = {
     regions: ['local'],
@@ -60,11 +62,15 @@ describe('CheckProcessor', () => {
       acquire: jest.fn().mockResolvedValue('lock-token'),
       release: jest.fn().mockResolvedValue(undefined),
     };
+    flaps = {
+      record: jest.fn().mockResolvedValue({ changes: 0, flapping: false }),
+    };
     processor = new CheckProcessor(
       prisma as unknown as PrismaService,
       scheduler as unknown as CheckSchedulerService,
       incidents as unknown as IncidentService,
       locks as unknown as CheckLockService,
+      flaps as unknown as FlapDetectorService,
       fleet,
     );
   });
@@ -172,6 +178,22 @@ describe('CheckProcessor', () => {
     );
   });
 
+  it('records the verdict for flapping before handing it to incidents', async () => {
+    prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.findMany.mockResolvedValue(checks(false));
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 500,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+
+    await processor.process(jobFor('mon-1'));
+
+    expect(flaps.record).toHaveBeenCalledWith('mon-1', 'hold');
+    expect(flaps.record.mock.invocationCallOrder[0]).toBeLessThan(
+      incidents.handleVerdict.mock.invocationCallOrder[0],
+    );
+  });
+
   it('claims the scheduled slot before probing', async () => {
     prisma.monitor.findUnique.mockResolvedValue(monitor);
     prisma.check.findMany.mockResolvedValue(checks(true));
@@ -198,6 +220,7 @@ describe('CheckProcessor', () => {
     expect(prisma.monitor.findUnique).not.toHaveBeenCalled();
     expect(prisma.check.create).not.toHaveBeenCalled();
     expect(incidents.handleVerdict).not.toHaveBeenCalled();
+    expect(flaps.record).not.toHaveBeenCalled();
     expect(locks.release).not.toHaveBeenCalled();
   });
 

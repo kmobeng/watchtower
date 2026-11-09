@@ -1,6 +1,7 @@
 import type { PrismaService } from '../prisma.service';
 import type { NotificationService } from '../notification/notification.service';
 import type { IncidentNotificationsService } from '../incident-notifications/incident-notifications.service';
+import type { FlapDetectorService } from '../flapping/flap-detector.service';
 import { OutboxPoller } from './outbox-poller';
 
 const makeEvent = (overrides: Record<string, any> = {}) => ({
@@ -22,6 +23,7 @@ describe('OutboxPoller', () => {
   let enqueuePasswordReset: jest.Mock;
   let enqueueEmailChangeNotice: jest.Mock;
   let enqueueIncidentNotification: jest.Mock;
+  let flaps: { isFlapping: jest.Mock };
   let loggerWarn: jest.Mock;
   let loggerError: jest.Mock;
 
@@ -32,6 +34,7 @@ describe('OutboxPoller', () => {
     enqueuePasswordReset = jest.fn().mockResolvedValue(undefined);
     enqueueEmailChangeNotice = jest.fn().mockResolvedValue(undefined);
     enqueueIncidentNotification = jest.fn().mockResolvedValue(undefined);
+    flaps = { isFlapping: jest.fn().mockResolvedValue(false) };
 
     poller = new OutboxPoller(
       {
@@ -45,6 +48,7 @@ describe('OutboxPoller', () => {
       {
         enqueue: enqueueIncidentNotification,
       } as unknown as IncidentNotificationsService,
+      flaps as unknown as FlapDetectorService,
     );
 
     loggerWarn = jest.fn();
@@ -237,5 +241,28 @@ describe('OutboxPoller', () => {
       where: { id: 'event-1' },
       data: { processedAt: expect.any(Date) },
     });
+  });
+
+  it('defers incident-escalated events while the monitor is flapping', async () => {
+    findMany.mockResolvedValue([
+      makeEvent({
+        eventType: 'incident-escalated',
+        aggregateType: 'incident',
+        aggregateId: 'inc-1',
+        payload: {
+          incidentId: 'inc-1',
+          monitorId: 'mon-1',
+          step: 0,
+          notifyChannelId: '11111111-1111-4111-8111-111111111111',
+        },
+      }),
+    ]);
+    flaps.isFlapping.mockResolvedValue(true);
+
+    await poller.dispatchOutboxEvents();
+
+    expect(flaps.isFlapping).toHaveBeenCalledWith('mon-1');
+    expect(enqueueIncidentNotification).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 });
