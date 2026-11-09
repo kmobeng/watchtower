@@ -4,6 +4,7 @@ import { CHECK_MONITOR_JOB } from './check-scheduler.service';
 import { PrismaService } from '../prisma.service';
 import { CheckSchedulerService } from './check-scheduler.service';
 import { IncidentService } from '../incidents/incident.service';
+import { CheckLockService } from './check-lock.service';
 import type { FleetConfig } from './check-regions';
 
 describe('CheckProcessor', () => {
@@ -14,6 +15,7 @@ describe('CheckProcessor', () => {
   };
   let scheduler: { unschedule: jest.Mock };
   let incidents: { handleVerdict: jest.Mock };
+  let locks: { acquire: jest.Mock; release: jest.Mock };
 
   const fleet: FleetConfig = {
     regions: ['local'],
@@ -30,9 +32,13 @@ describe('CheckProcessor', () => {
     intervalSeconds: 60,
   };
 
-  function jobFor(monitorId: string, region = 'local') {
+  function jobFor(
+    monitorId: string,
+    region = 'local',
+    id = `repeat:monitor:${monitorId}:1700000000000`,
+  ) {
     return {
-      id: 'job-1',
+      id,
       name: CHECK_MONITOR_JOB,
       data: { monitorId, region },
     } as never;
@@ -50,10 +56,15 @@ describe('CheckProcessor', () => {
     };
     scheduler = { unschedule: jest.fn() };
     incidents = { handleVerdict: jest.fn() };
+    locks = {
+      acquire: jest.fn().mockResolvedValue('lock-token'),
+      release: jest.fn().mockResolvedValue(undefined),
+    };
     processor = new CheckProcessor(
       prisma as unknown as PrismaService,
       scheduler as unknown as CheckSchedulerService,
       incidents as unknown as IncidentService,
+      locks as unknown as CheckLockService,
       fleet,
     );
   });
@@ -161,6 +172,35 @@ describe('CheckProcessor', () => {
     );
   });
 
+  it('claims the scheduled slot before probing', async () => {
+    prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.findMany.mockResolvedValue(checks(true));
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 200,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+
+    await processor.process(jobFor('mon-1'));
+
+    expect(locks.acquire).toHaveBeenCalledWith(
+      'local',
+      'mon-1',
+      '1700000000000',
+    );
+    expect(locks.release).not.toHaveBeenCalled();
+  });
+
+  it('skips without probing when another worker owns the slot', async () => {
+    locks.acquire.mockResolvedValue(null);
+
+    await expect(processor.process(jobFor('mon-1'))).resolves.toBeNull();
+
+    expect(prisma.monitor.findUnique).not.toHaveBeenCalled();
+    expect(prisma.check.create).not.toHaveBeenCalled();
+    expect(incidents.handleVerdict).not.toHaveBeenCalled();
+    expect(locks.release).not.toHaveBeenCalled();
+  });
+
   it('drops a job tagged for another region', async () => {
     await expect(
       processor.process(jobFor('mon-1', 'elsewhere')),
@@ -186,6 +226,25 @@ describe('CheckProcessor', () => {
       body: { cancel: jest.fn().mockResolvedValue(undefined) },
     } as never);
     prisma.check.create.mockRejectedValue(new Error('DB down'));
+
+    await expect(processor.process(jobFor('mon-1'))).rejects.toThrow('DB down');
+
+    expect(locks.release).toHaveBeenCalledWith(
+      'local',
+      'mon-1',
+      '1700000000000',
+      'lock-token',
+    );
+  });
+
+  it('still rethrows the original failure when releasing the lock fails', async () => {
+    prisma.monitor.findUnique.mockResolvedValue(monitor);
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 200,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+    prisma.check.create.mockRejectedValue(new Error('DB down'));
+    locks.release.mockRejectedValue(new Error('Redis down'));
 
     await expect(processor.process(jobFor('mon-1'))).rejects.toThrow('DB down');
   });

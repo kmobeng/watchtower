@@ -60,6 +60,13 @@ $ npm run start:worker:dev
 Set `CHECK_REGIONS` on the API to the comma-separated fleet and `CHECK_REGION`
 on each worker to the region it probes. See `.env.example`.
 
+Each scheduled check is claimed in Redis under
+`check-lock:{region}:{monitor}:{scheduledTime}` before probing. A duplicate
+delivery of the same slot within a region is skipped, and the claim is released
+early only when an attempt fails so BullMQ's retry can run.
+`CHECK_LOCK_TTL_SECONDS` (default 300) controls how long a successful claim is
+retained.
+
 ## Run tests
 
 ```bash

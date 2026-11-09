@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service';
 import { IncidentService } from '../incidents/incident.service';
 import type { FleetConfig } from './check-regions';
 import { CheckSchedulingModule } from './check-scheduling.module';
+import { CheckLockService } from './check-lock.service';
 import { CheckProcessor } from './check.processor';
 import { CheckReconciler } from './check-reconciler';
 
@@ -23,6 +24,7 @@ export class CheckWorkerModule {
       providers: [
         PrismaService,
         IncidentService,
+        CheckLockService,
         CheckProcessor,
         CheckReconciler,
       ],

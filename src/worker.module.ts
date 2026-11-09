@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { QueueModule } from './queue/queue.module';
+import { RedisModule } from './redis/redis.module';
 import { CheckWorkerModule } from './checks/check-worker.module';
 import { loadWorkerFleetConfig } from './checks/check-regions';
 
@@ -11,6 +12,7 @@ import { loadWorkerFleetConfig } from './checks/check-regions';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    RedisModule,
     QueueModule,
     CheckWorkerModule.forRoot(loadWorkerFleetConfig(process.env)),
   ],

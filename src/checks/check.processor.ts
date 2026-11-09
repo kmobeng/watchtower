@@ -13,6 +13,7 @@ import {
 } from './check-scheduler.service';
 import type { CheckMonitorJob } from './check-scheduler.service';
 import { classifyCheck } from './check-classifier';
+import { CheckLockService, scheduledTimeOfJob } from './check-lock.service';
 import { runHttpCheck } from './check-http';
 import { evaluateQuorum, freshnessWindowMs } from './check-quorum';
 import type { QuorumEvaluation, RegionSnapshot } from './check-quorum';
@@ -31,6 +32,7 @@ export class CheckProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly scheduler: CheckSchedulerService,
     private readonly incidents: IncidentService,
+    private readonly locks: CheckLockService,
     @Inject(CHECK_FLEET_CONFIG) private readonly fleet: FleetConfig,
   ) {
     super();
@@ -57,7 +59,51 @@ export class CheckProcessor extends WorkerHost {
       return null;
     }
 
-    return this.runCheck(job.data.monitorId, region);
+    const scheduledTime = scheduledTimeOfJob(job);
+    const token = await this.locks.acquire(
+      region,
+      job.data.monitorId,
+      scheduledTime,
+    );
+
+    if (!token) {
+      this.logger.log(
+        {
+          monitorId: job.data.monitorId,
+          region,
+          scheduledTime,
+        },
+        'Check already claimed by another worker, skipping duplicate',
+      );
+      return null;
+    }
+
+    try {
+      return await this.runCheck(job.data.monitorId, region);
+    } catch (error) {
+      // A held lock would turn BullMQ's retry into a silent no-op. Release it
+      // so the retry can claim the slot, and never mask the original failure.
+      try {
+        await this.locks.release(
+          region,
+          job.data.monitorId,
+          scheduledTime,
+          token,
+        );
+      } catch (releaseError) {
+        this.logger.warn(
+          {
+            monitorId: job.data.monitorId,
+            region,
+            scheduledTime,
+            err: releaseError,
+          },
+          'Failed to release check lock',
+        );
+      }
+
+      throw error;
+    }
   }
 
   private async runCheck(

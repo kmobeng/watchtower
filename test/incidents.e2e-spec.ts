@@ -12,6 +12,7 @@ import {
   CheckSchedulerService,
 } from '../src/checks/check-scheduler.service';
 import { CheckProcessor } from '../src/checks/check.processor';
+import type { CheckLockService } from '../src/checks/check-lock.service';
 import { IncidentService } from '../src/incidents/incident.service';
 import type { FleetConfig } from '../src/checks/check-regions';
 
@@ -65,6 +66,10 @@ describe('Incidents (live Postgres + Redis)', () => {
       prisma,
       app.get(CheckSchedulerService),
       app.get(IncidentService),
+      {
+        acquire: () => Promise.resolve('test-token'),
+        release: () => Promise.resolve(),
+      } as unknown as CheckLockService,
       {
         regions: ['local'],
         region: 'local',
