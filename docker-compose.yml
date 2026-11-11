@@ -1,3 +1,33 @@
+name: watchtower
+
+# Shared by every app container. Values come from the host `.env` (or the
+# shell) when present; the two service URLs are overridden because inside the
+# network the dependencies are reached by service name, not localhost.
+x-app-environment: &app-environment
+  NODE_ENV: production
+  PORT: 3000
+  APP_URL: "${APP_URL:-http://localhost:3000}"
+  DATABASE_URL: postgresql://postgres:postgres@postgres:5432/watchtower
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: "${JWT_SECRET:-change-me}"
+  JWT_EXPIRES_IN: "${JWT_EXPIRES_IN:-15m}"
+  REFRESH_JWT_SECRET: "${REFRESH_JWT_SECRET:-change-me}"
+  REFRESH_JWT_EXPIRES_IN: "${REFRESH_JWT_EXPIRES_IN:-14d}"
+  REFRESH_JWT_COOKIE_EXPIRES_IN: "${REFRESH_JWT_COOKIE_EXPIRES_IN:-14}"
+  # `dev` writes to Mailpit below; set resend/twilio for real delivery.
+  EMAIL_PROVIDER: "${EMAIL_PROVIDER:-dev}"
+  EMAIL_FROM: "${EMAIL_FROM:-WatchTower <noreply@watchtower.local>}"
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  RESEND_API_KEY: "${RESEND_API_KEY:-}"
+  SMS_PROVIDER: "${SMS_PROVIDER:-dev}"
+  TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID:-}"
+  TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN:-}"
+  TWILIO_FROM_NUMBER: "${TWILIO_FROM_NUMBER:-}"
+  CHECK_REGIONS: "${CHECK_REGIONS:-local}"
+  CHECK_QUORUM: "${CHECK_QUORUM:-1}"
+  WS_CORS_ORIGIN: "${WS_CORS_ORIGIN:-*}"
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -24,6 +54,11 @@ services:
     restart: unless-stopped
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   mailpit:
     image: axllent/mailpit:latest
@@ -32,6 +67,58 @@ services:
     ports:
       - "1025:1025"
       - "8025:8025"
+
+  # One-shot schema step. Built from the `build` stage so the Prisma CLI (a dev
+  # dependency) is available; `api` and `worker` wait for it to succeed.
+  migrate:
+    build:
+      context: .
+      target: build
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      target: runtime
+    environment: *app-environment
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # One worker per region. Scale this service and set CHECK_REGION per replica
+  # when you configure more than one region in CHECK_REGIONS.
+  worker:
+    build:
+      context: .
+      target: runtime
+    command: ["node", "dist/src/worker.js"]
+    # The image healthcheck probes the API's HTTP port. The worker is a BullMQ
+    # consumer with no HTTP server, so it would always report unhealthy.
+    healthcheck:
+      disable: true
+    environment:
+      <<: *app-environment
+      CHECK_REGION: "${CHECK_REGION:-local}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
 volumes:
   watchtower-pgdata:

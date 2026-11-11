@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import {
+  deriveMonitorState,
   evaluateQuorum,
   freshnessWindowMs,
   RegionSnapshot,
@@ -148,5 +149,62 @@ describe('evaluateQuorum', () => {
     );
 
     expect(result.verdict).toBe('down');
+  });
+});
+
+describe('deriveMonitorState', () => {
+  it('reports down and up from a settled verdict', () => {
+    expect(
+      deriveMonitorState(evaluate([snapshot('a', [false, false, false])], 1)),
+    ).toBe('down');
+    expect(deriveMonitorState(evaluate([snapshot('a', [true])], 1))).toBe('up');
+  });
+
+  it('reports suspicious when a fresh region has failures below the threshold', () => {
+    // One failure, threshold 3: not down, but not healthy either.
+    expect(deriveMonitorState(evaluate([snapshot('a', [false])], 1))).toBe(
+      'suspicious',
+    );
+  });
+
+  it('reports suspicious when a fresh region is down but quorum is not met', () => {
+    expect(
+      deriveMonitorState(
+        evaluate(
+          [snapshot('a', [false, false, false]), snapshot('b', [true])],
+          2,
+        ),
+      ),
+    ).toBe('suspicious');
+  });
+
+  it('reports unknown when no region is fresh', () => {
+    expect(deriveMonitorState(evaluate([snapshot('a', [], null)], 1))).toBe(
+      'unknown',
+    );
+
+    const stale = new Date(NOW.getTime() - 60_000);
+    expect(
+      deriveMonitorState(
+        evaluate([snapshot('a', [false, false, false], stale)], 1),
+      ),
+    ).toBe('unknown');
+  });
+
+  it('reports unknown when fresh regions are up but quorum is not met', () => {
+    const stale = new Date(NOW.getTime() - 60_000);
+
+    expect(
+      deriveMonitorState(
+        evaluate(
+          [
+            snapshot('a', [true]),
+            snapshot('b', [true], stale),
+            snapshot('c', [true], stale),
+          ],
+          2,
+        ),
+      ),
+    ).toBe('unknown');
   });
 });

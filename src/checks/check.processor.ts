@@ -15,11 +15,28 @@ import type { CheckMonitorJob } from './check-scheduler.service';
 import { classifyCheck } from './check-classifier';
 import { CheckLockService, scheduledTimeOfJob } from './check-lock.service';
 import { runHttpCheck } from './check-http';
-import { evaluateQuorum, freshnessWindowMs } from './check-quorum';
-import type { QuorumEvaluation, RegionSnapshot } from './check-quorum';
+import {
+  deriveMonitorState,
+  evaluateQuorum,
+  freshnessWindowMs,
+} from './check-quorum';
+import type {
+  MonitorHealth,
+  QuorumEvaluation,
+  RegionSnapshot,
+} from './check-quorum';
 import { IncidentService } from '../incidents/incident.service';
 import { FlapDetectorService } from '../flapping/flap-detector.service';
 import { PrismaService } from '../prisma.service';
+import { MonitorState } from '../../generated/prisma/client';
+
+/** Maps the derived health label onto the persisted enum. */
+const MONITOR_STATE: Record<MonitorHealth, MonitorState> = {
+  up: MonitorState.UP,
+  down: MonitorState.DOWN,
+  suspicious: MonitorState.SUSPICIOUS,
+  unknown: MonitorState.UNKNOWN,
+};
 
 // Evaluated at import so the @Processor decorator can pick its region queue.
 // Entrypoints import 'dotenv/config' first, before this module is loaded.
@@ -122,8 +139,20 @@ export class CheckProcessor extends WorkerHost {
       return null;
     }
 
-    const result = await runHttpCheck(monitor.url, monitor.timeoutMs);
-    const isUp = classifyCheck(result.statusCode);
+    const result = await runHttpCheck(
+      monitor.url,
+      monitor.timeoutMs,
+      monitor.method,
+    );
+    const classification = classifyCheck({
+      statusCode: result.statusCode,
+      responseTimeMs: result.responseTimeMs,
+      responseTimeThresholdMs: monitor.responseTimeThresholdMs,
+    });
+    const isUp = classification.isUp;
+    // A slow-but-successful response has no transport error, so the cause is
+    // recorded explicitly for the incident opener to read back.
+    const error = result.error ?? (classification.slow ? 'slow' : null);
 
     // Record this region's result before evaluating, so the snapshot query
     // below sees it.
@@ -135,7 +164,7 @@ export class CheckProcessor extends WorkerHost {
         responseTimeMs: result.responseTimeMs,
         isUp,
         timedOut: result.timedOut,
-        error: result.error,
+        error,
       },
     });
 
@@ -180,6 +209,9 @@ export class CheckProcessor extends WorkerHost {
     // closes incidents is counted consistently. 'hold' is a no-op.
     await this.flaps.record(monitor.id, evaluation.verdict);
 
+    // Derived cache for read paths (GET /monitors). Never fails the check.
+    await this.persistState(monitor.id, deriveMonitorState(evaluation));
+
     // Incidents own what happens next: open on 'down', resolve on 'up', and
     // ignore 'hold'.
     await this.incidents.handleVerdict(
@@ -189,6 +221,34 @@ export class CheckProcessor extends WorkerHost {
     );
 
     return evaluation;
+  }
+
+  /**
+   * Writes the monitor's aggregate state only when it changed, so a steady
+   * monitor costs no extra writes. A failure here is logged and swallowed: the
+   * check itself is already persisted and must not be retried over a cache.
+   */
+  private async persistState(
+    monitorId: string,
+    health: MonitorHealth,
+  ): Promise<void> {
+    const state = MONITOR_STATE[health];
+
+    try {
+      await this.prisma.monitor.updateMany({
+        where: { id: monitorId, state: { not: state } },
+        data: { state },
+      });
+    } catch (error) {
+      this.logger.warn(
+        {
+          monitorId,
+          state,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist monitor state',
+      );
+    }
   }
 
   private async loadSnapshots(

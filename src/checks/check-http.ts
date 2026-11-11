@@ -1,6 +1,8 @@
 export type CheckErrorKind =
   'timeout' | 'connection_refused' | 'dns' | 'network';
 
+export type CheckMethod = 'GET' | 'HEAD' | 'POST';
+
 export interface HttpCheckResult {
   statusCode: number | null;
   responseTimeMs: number;
@@ -9,7 +11,7 @@ export interface HttpCheckResult {
 }
 
 /**
- * Sends a single GET request and records the outcome. Never throws for
+ * Sends a single request and records the outcome. Never throws for
  * HTTP-level outcomes (5xx, timeouts, refused connections, DNS failures) —
  * those are data, returned as a down-classified result. Only truly
  * unexpected failures propagate.
@@ -17,12 +19,13 @@ export interface HttpCheckResult {
 export async function runHttpCheck(
   url: string,
   timeoutMs: number,
+  method: CheckMethod = 'GET',
 ): Promise<HttpCheckResult> {
   const startedAt = Date.now();
 
   try {
     const response = await fetch(url, {
-      method: 'GET',
+      method,
       redirect: 'follow',
       signal: AbortSignal.timeout(timeoutMs),
     });

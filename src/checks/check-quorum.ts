@@ -1,4 +1,5 @@
-import { evaluateStreak, MonitorState } from './check-streak';
+import { evaluateStreak } from './check-streak';
+import type { RegionState } from './check-streak';
 
 export type QuorumVerdict = 'up' | 'down' | 'hold';
 
@@ -12,7 +13,7 @@ export interface RegionSnapshot {
 
 export interface RegionEvaluation {
   region: string;
-  state: MonitorState;
+  state: RegionState;
   fresh: boolean;
 }
 
@@ -87,4 +88,29 @@ export function evaluateQuorum(input: {
     upRegions,
     freshRegions: fresh.map((region) => region.region),
   };
+}
+
+/** The monitor-level health label persisted for read paths. */
+export type MonitorHealth = 'up' | 'down' | 'suspicious' | 'unknown';
+
+/**
+ * Collapses a quorum evaluation into the state shown on the monitor.
+ *
+ * A verdict only settles the monitor when quorum actually agreed. `hold` is
+ * ambiguous, so it is split by evidence: any fresh region reporting failures
+ * means SUSPICIOUS (a single failure is not down, but it is not healthy
+ * either), while no fresh region means we genuinely do not know.
+ */
+export function deriveMonitorState(
+  evaluation: QuorumEvaluation,
+): MonitorHealth {
+  if (evaluation.verdict === 'down') return 'down';
+  if (evaluation.verdict === 'up') return 'up';
+  if (evaluation.freshRegions.length === 0) return 'unknown';
+
+  const anyIssue = evaluation.regions.some(
+    (region) => region.fresh && region.state !== 'up',
+  );
+
+  return anyIssue ? 'suspicious' : 'unknown';
 }

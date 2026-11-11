@@ -11,7 +11,7 @@ import type { FleetConfig } from './check-regions';
 describe('CheckProcessor', () => {
   let processor: CheckProcessor;
   let prisma: {
-    monitor: { findUnique: jest.Mock };
+    monitor: { findUnique: jest.Mock; updateMany: jest.Mock };
     check: { create: jest.Mock; findMany: jest.Mock };
   };
   let scheduler: { unschedule: jest.Mock };
@@ -29,7 +29,9 @@ describe('CheckProcessor', () => {
   const monitor = {
     id: 'mon-1',
     url: 'https://example.com/health',
+    method: 'GET',
     timeoutMs: 10000,
+    responseTimeThresholdMs: null,
     failureThreshold: 3,
     intervalSeconds: 60,
   };
@@ -53,7 +55,7 @@ describe('CheckProcessor', () => {
 
   beforeEach(() => {
     prisma = {
-      monitor: { findUnique: jest.fn() },
+      monitor: { findUnique: jest.fn(), updateMany: jest.fn() },
       check: { create: jest.fn(), findMany: jest.fn() },
     };
     scheduler = { unschedule: jest.fn() };
@@ -156,6 +158,63 @@ describe('CheckProcessor', () => {
     await expect(processor.process(jobFor('mon-1'))).resolves.toMatchObject({
       verdict: 'down',
       downRegions: ['local'],
+    });
+  });
+
+  it('marks a slow response down and records the slow cause', async () => {
+    prisma.monitor.findUnique.mockResolvedValue({
+      ...monitor,
+      responseTimeThresholdMs: 100,
+    });
+    prisma.check.findMany.mockResolvedValue(checks(true));
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 200,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+    // runHttpCheck reads the clock once at start and once at finish.
+    jest
+      .spyOn(Date, 'now')
+      .mockReturnValueOnce(1_000)
+      .mockReturnValueOnce(1_500);
+
+    await processor.process(jobFor('mon-1'));
+
+    expect(prisma.check.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        statusCode: 200,
+        isUp: false,
+        error: 'slow',
+      }),
+    });
+  });
+
+  it('persists the derived monitor state for read paths', async () => {
+    prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.findMany.mockResolvedValue(checks(false, false, false));
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 500,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+
+    await processor.process(jobFor('mon-1'));
+
+    expect(prisma.monitor.updateMany).toHaveBeenCalledWith({
+      where: { id: 'mon-1', state: { not: 'DOWN' } },
+      data: { state: 'DOWN' },
+    });
+  });
+
+  it('does not fail a recorded check when persisting state fails', async () => {
+    prisma.monitor.findUnique.mockResolvedValue(monitor);
+    prisma.check.findMany.mockResolvedValue(checks(true));
+    prisma.monitor.updateMany.mockRejectedValue(new Error('DB down'));
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 200,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+
+    await expect(processor.process(jobFor('mon-1'))).resolves.toMatchObject({
+      verdict: 'up',
     });
   });
 

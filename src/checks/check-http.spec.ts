@@ -58,7 +58,9 @@ describe('runHttpCheck', () => {
     syscallFailure.code = 'ECONNREFUSED';
     jest
       .spyOn(global, 'fetch')
-      .mockRejectedValue(new TypeError('fetch failed', { cause: syscallFailure }));
+      .mockRejectedValue(
+        new TypeError('fetch failed', { cause: syscallFailure }),
+      );
 
     const result = await runHttpCheck('http://127.0.0.1:9', 5000);
 
@@ -79,5 +81,24 @@ describe('runHttpCheck', () => {
 
     expect(result.statusCode).toBe(503);
     expect(result.error).toBeNull();
+  });
+
+  it('uses the monitor method and defaults to GET', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+      status: 200,
+      body: { cancel: jest.fn().mockResolvedValue(undefined) },
+    } as never);
+
+    await runHttpCheck('https://example.com/health', 10000);
+    expect(fetchSpy).toHaveBeenLastCalledWith(
+      'https://example.com/health',
+      expect.objectContaining({ method: 'GET' }),
+    );
+
+    await runHttpCheck('https://example.com/health', 10000, 'HEAD');
+    expect(fetchSpy).toHaveBeenLastCalledWith(
+      'https://example.com/health',
+      expect.objectContaining({ method: 'HEAD' }),
+    );
   });
 });

@@ -15,6 +15,20 @@ enum Role {
 
 enum HttpMethod {
   GET
+  HEAD
+  POST
+}
+
+/**
+ * The monitor's aggregate health, derived from the latest quorum evaluation.
+ * SUSPICIOUS means failures exist but have not reached `failureThreshold`
+ * (or quorum has not been met), so no incident is open yet.
+ */
+enum MonitorState {
+  UNKNOWN
+  UP
+  SUSPICIOUS
+  DOWN
 }
 
 enum IncidentStatus {
@@ -92,7 +106,13 @@ model Monitor {
   method             HttpMethod        @default(GET)
   intervalSeconds    Int               @map("interval_seconds")
   timeoutMs          Int               @default(10000) @map("timeout_ms")
+  // Opt-in "slow is down" limit. Null disables it: only status code and the
+  // hard timeout decide. Must be below timeoutMs, or it can never fire.
+  responseTimeThresholdMs Int?        @map("response_time_threshold_ms")
   failureThreshold   Int               @default(3) @map("failure_threshold")
+  // Derived cache of the last quorum evaluation, written by the check worker.
+  // Read paths use it instead of recomputing streaks per monitor.
+  state              MonitorState      @default(UNKNOWN)
   createdAt          DateTime          @default(now()) @map("created_at")
   updatedAt          DateTime          @updatedAt @map("updated_at")
   checks             Check[]

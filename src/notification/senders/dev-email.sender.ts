@@ -4,8 +4,13 @@ import nodemailer, { Transporter } from 'nodemailer';
 import { Logger } from '@nestjs/common';
 import { EmailSender, SendEmailOptions } from './email-sender.interface';
 
+const DEFAULT_SMTP_HOST = 'localhost';
+const DEFAULT_SMTP_PORT = '1025';
+
 /**
- * Development sender: hands mail to Mailpit over plain SMTP on localhost.
+ * Development sender: hands mail to Mailpit over plain SMTP. Defaults to
+ * localhost:1025; `SMTP_HOST`/`SMTP_PORT` exist so the same sender works from
+ * inside a container, where Mailpit is a separate service.
  * No credentials are read, so this must never be selected in production.
  */
 @Injectable()
@@ -20,9 +25,16 @@ export class DevEmailSender implements EmailSender {
       throw new Error('EMAIL_FROM is missing in environment variables');
     }
 
+    const port = Number(
+      this.configService.get<string>('SMTP_PORT') ?? DEFAULT_SMTP_PORT,
+    );
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new Error(`SMTP_PORT must be a positive integer (got "${port}")`);
+    }
+
     this.transporter = nodemailer.createTransport({
-      host: 'localhost',
-      port: 1025,
+      host: this.configService.get<string>('SMTP_HOST') ?? DEFAULT_SMTP_HOST,
+      port,
       secure: false,
     });
   }

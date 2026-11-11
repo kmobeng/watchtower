@@ -44,6 +44,24 @@ $ npm run start:dev
 $ npm run start:prod
 ```
 
+### Docker Compose
+
+The whole stack — Postgres, Redis, Mailpit, the API, a checker worker, and a
+one-shot migration step — runs from the repo root:
+
+```bash
+$ docker compose up --build
+```
+
+`migrate` applies pending Prisma migrations and exits; `api` and `worker` only
+start once it succeeds. The API is on http://localhost:3000 and Mailpit on
+http://localhost:8025. Compose overrides `DATABASE_URL` and `REDIS_URL` to the
+service names, so the `localhost:5433` values in `.env` only apply when running
+the app on the host.
+
+The image is a two-stage build: dev dependencies generate the Prisma client and
+compile `dist`, and the runtime stage installs production dependencies only.
+
 ### Checker workers
 
 The API schedules checks but does not run them. Each region has its own worker
@@ -59,6 +77,22 @@ $ npm run start:worker:dev
 
 Set `CHECK_REGIONS` on the API to the comma-separated fleet and `CHECK_REGION`
 on each worker to the region it probes. See `.env.example`.
+
+Each monitor chooses how it is probed:
+
+| Field                     | Meaning                                                              |
+| ------------------------- | -------------------------------------------------------------------- |
+| `method`                  | `GET` (default), `HEAD` or `POST`                                     |
+| `timeoutMs`               | Hard limit; a slower response is aborted and recorded as a timeout    |
+| `responseTimeThresholdMs` | Optional slow limit. A successful response above it is recorded down  |
+| `failureThreshold`        | Consecutive failures before a region counts as down                   |
+
+`responseTimeThresholdMs` must be below `timeoutMs`, otherwise the timeout
+always fires first and the slow limit could never apply. The worker stores the
+derived `state` on the monitor — `up`, `suspicious`, `down` or `unknown` — and
+`GET /monitors` returns it alongside the computed `flapping` flag. `suspicious`
+means failures exist but have not reached `failureThreshold`, so no incident is
+open yet.
 
 Each scheduled check is claimed in Redis under
 `check-lock:{region}:{monitor}:{scheduledTime}` before probing. A duplicate

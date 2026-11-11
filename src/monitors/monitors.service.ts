@@ -19,6 +19,9 @@ import { UpdateMonitorDto } from './dto/update-monitor.dto';
 
 export type MonitorWithFlapping = Monitor & { flapping: boolean };
 
+const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_FAILURE_THRESHOLD = 3;
+
 export interface PaginatedMonitors {
   items: MonitorWithFlapping[];
   total: number;
@@ -41,9 +44,11 @@ export class MonitorsService {
     userId: string,
     dto: CreateMonitorDto,
   ): Promise<MonitorWithFlapping> {
-    this.assertTimeoutWithinInterval(
-      dto.intervalSeconds,
-      dto.timeoutMs ?? 10000,
+    const timeoutMs = dto.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.assertTimeoutWithinInterval(dto.intervalSeconds, timeoutMs);
+    this.assertResponseThresholdWithinTimeout(
+      timeoutMs,
+      dto.responseTimeThresholdMs,
     );
 
     if (dto.escalationPolicyId) {
@@ -54,9 +59,13 @@ export class MonitorsService {
       data: {
         userId,
         url: dto.url,
+        ...(dto.method ? { method: dto.method } : {}),
         intervalSeconds: dto.intervalSeconds,
-        timeoutMs: dto.timeoutMs ?? 10000,
-        failureThreshold: dto.failureThreshold ?? 3,
+        timeoutMs,
+        ...(dto.responseTimeThresholdMs !== undefined
+          ? { responseTimeThresholdMs: dto.responseTimeThresholdMs }
+          : {}),
+        failureThreshold: dto.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD,
         ...(dto.escalationPolicyId
           ? { escalationPolicyId: dto.escalationPolicyId }
           : {}),
@@ -146,6 +155,12 @@ export class MonitorsService {
     const nextInterval = dto.intervalSeconds ?? existing.intervalSeconds;
     const nextTimeout = dto.timeoutMs ?? existing.timeoutMs;
     this.assertTimeoutWithinInterval(nextInterval, nextTimeout);
+    this.assertResponseThresholdWithinTimeout(
+      nextTimeout,
+      dto.responseTimeThresholdMs !== undefined
+        ? dto.responseTimeThresholdMs
+        : existing.responseTimeThresholdMs,
+    );
 
     if (Object.keys(dto).length === 0) {
       return {
@@ -162,10 +177,14 @@ export class MonitorsService {
       where: { id: existing.id },
       data: {
         ...(dto.url !== undefined ? { url: dto.url } : {}),
+        ...(dto.method !== undefined ? { method: dto.method } : {}),
         ...(dto.intervalSeconds !== undefined
           ? { intervalSeconds: dto.intervalSeconds }
           : {}),
         ...(dto.timeoutMs !== undefined ? { timeoutMs: dto.timeoutMs } : {}),
+        ...(dto.responseTimeThresholdMs !== undefined
+          ? { responseTimeThresholdMs: dto.responseTimeThresholdMs }
+          : {}),
         ...(dto.failureThreshold !== undefined
           ? { failureThreshold: dto.failureThreshold }
           : {}),
@@ -225,6 +244,21 @@ export class MonitorsService {
     if (timeoutMs >= intervalSeconds * 1000) {
       throw new BadRequestException(
         'Timeout must be less than the check interval',
+      );
+    }
+  }
+
+  /**
+   * A slow limit at or above the timeout can never fire: the request is
+   * aborted at the timeout first. Rejecting it on write beats a silent no-op.
+   */
+  private assertResponseThresholdWithinTimeout(
+    timeoutMs: number,
+    thresholdMs: number | null | undefined,
+  ): void {
+    if (thresholdMs != null && thresholdMs >= timeoutMs) {
+      throw new BadRequestException(
+        'responseTimeThresholdMs must be less than timeoutMs',
       );
     }
   }

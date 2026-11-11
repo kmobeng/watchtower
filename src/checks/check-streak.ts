@@ -1,7 +1,7 @@
-export type MonitorState = 'up' | 'suspicious' | 'down';
+export type RegionState = 'up' | 'suspicious' | 'down';
 
 export interface StreakEvaluation {
-  state: MonitorState;
+  state: RegionState;
   consecutiveFailures: number;
 }
 

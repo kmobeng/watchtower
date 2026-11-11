@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsEnum,
   IsInt,
   IsOptional,
   IsString,
@@ -9,6 +10,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { HttpMethod } from '../../../generated/prisma/client';
 
 export class UpdateMonitorDto {
   @IsOptional()
@@ -25,6 +27,12 @@ export class UpdateMonitorDto {
   url?: string;
 
   @IsOptional()
+  @IsEnum(HttpMethod, {
+    message: 'Method must be one of GET, HEAD or POST',
+  })
+  method?: HttpMethod;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt({ message: 'Interval must be an integer number of seconds' })
   @Min(60, { message: 'Interval must be at least 60 seconds' })
@@ -37,6 +45,19 @@ export class UpdateMonitorDto {
   @Min(1000, { message: 'Timeout must be at least 1000ms' })
   @Max(30000, { message: 'Timeout must be at most 30000ms' })
   timeoutMs?: number;
+
+  /** Send `null` to disable the slow-response limit. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt({
+    message:
+      'Response time threshold must be an integer number of milliseconds',
+  })
+  @Min(100, { message: 'Response time threshold must be at least 100ms' })
+  @Max(30000, {
+    message: 'Response time threshold must be at most 30000ms',
+  })
+  responseTimeThresholdMs?: number | null;
 
   @IsOptional()
   @Type(() => Number)

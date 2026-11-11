@@ -1,0 +1,14 @@
+# Build inputs are copied explicitly by the Dockerfile; keep the context small
+# and never leak local secrets or host-built artifacts into the image.
+node_modules
+dist
+generated
+coverage
+test
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo

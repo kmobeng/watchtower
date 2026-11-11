@@ -1,4 +1,8 @@
-import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { MonitorsService } from './monitors.service';
 import { PrismaService } from '../prisma.service';
 import { CheckSchedulerService } from '../checks/check-scheduler.service';
@@ -241,6 +245,105 @@ describe('MonitorsService scheduling', () => {
     scheduler.unschedule.mockRejectedValue(new Error('Redis down'));
 
     await expect(service.remove('user-1', 'mon-1')).resolves.toBeUndefined();
+  });
+});
+
+describe('MonitorsService check semantics', () => {
+  let service: MonitorsService;
+  let prisma: {
+    monitor: {
+      create: jest.Mock;
+      findFirst: jest.Mock;
+      update: jest.Mock;
+    };
+  };
+
+  const monitor = {
+    id: 'mon-1',
+    userId: 'user-1',
+    url: 'https://example.com/health',
+    method: 'GET',
+    intervalSeconds: 300,
+    timeoutMs: 10000,
+    responseTimeThresholdMs: null,
+    failureThreshold: 3,
+  };
+
+  beforeEach(() => {
+    prisma = {
+      monitor: {
+        create: jest.fn().mockResolvedValue(monitor),
+        findFirst: jest.fn().mockResolvedValue(monitor),
+        update: jest.fn().mockResolvedValue(monitor),
+      },
+    };
+    service = new MonitorsService(
+      prisma as unknown as PrismaService,
+      {
+        schedule: jest.fn(),
+        unschedule: jest.fn(),
+      } as unknown as CheckSchedulerService,
+      {
+        isFlapping: jest.fn().mockResolvedValue(false),
+        isFlappingMany: jest.fn().mockResolvedValue(new Map()),
+        reset: jest.fn(),
+      } as unknown as FlapDetectorService,
+    );
+  });
+
+  it('persists the requested method and slow limit on create', async () => {
+    await service.create('user-1', {
+      url: monitor.url,
+      intervalSeconds: 300,
+      method: 'HEAD',
+      responseTimeThresholdMs: 500,
+    });
+
+    expect(prisma.monitor.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        method: 'HEAD',
+        responseTimeThresholdMs: 500,
+      }),
+    });
+  });
+
+  it('omits the method when it is not supplied so the column default applies', async () => {
+    await service.create('user-1', {
+      url: monitor.url,
+      intervalSeconds: 300,
+    });
+
+    const data = prisma.monitor.create.mock.calls[0][0].data;
+    expect(data).not.toHaveProperty('method');
+    expect(data).not.toHaveProperty('responseTimeThresholdMs');
+  });
+
+  it('rejects a slow limit that can never fire', async () => {
+    await expect(
+      service.create('user-1', {
+        url: monitor.url,
+        intervalSeconds: 300,
+        timeoutMs: 5000,
+        responseTimeThresholdMs: 5000,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.monitor.create).not.toHaveBeenCalled();
+  });
+
+  it('validates a new threshold against the existing timeout on update', async () => {
+    await expect(
+      service.update('user-1', 'mon-1', { responseTimeThresholdMs: 12000 }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.monitor.update).not.toHaveBeenCalled();
+  });
+
+  it('clears the slow limit when null is sent', async () => {
+    await service.update('user-1', 'mon-1', { responseTimeThresholdMs: null });
+
+    expect(prisma.monitor.update).toHaveBeenCalledWith({
+      where: { id: 'mon-1' },
+      data: expect.objectContaining({ responseTimeThresholdMs: null }),
+    });
   });
 });
 

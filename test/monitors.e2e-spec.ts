@@ -116,7 +116,7 @@ describe('Monitors (live Postgres + Redis)', () => {
       .send({
         url: 'https://example.com/b',
         intervalSeconds: 300,
-        method: 'POST',
+        method: 'DELETE',
       })
       .expect(400);
 
