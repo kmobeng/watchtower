@@ -88,3 +88,21 @@ export function bucketStartsBetween(
     addBuckets(first, granularity, index),
   );
 }
+
+/** Uptime as a percentage with two decimals, null when nothing was checked. */
+export function uptimePercentage(
+  upCount: number,
+  checkCount: number,
+): number | null {
+  if (checkCount <= 0) return null;
+  return Math.round((upCount / checkCount) * 10_000) / 100;
+}
+
+/** Average response time with two decimals, null when no check succeeded. */
+export function averageResponseTime(
+  sumMs: number,
+  count: number,
+): number | null {
+  if (count <= 0) return null;
+  return Math.round((sumMs / count) * 100) / 100;
+}

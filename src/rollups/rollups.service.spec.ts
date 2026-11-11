@@ -175,18 +175,21 @@ describe('RollupsService', () => {
     it('combines regions and derives uptime and average on read', async () => {
       prisma.checkRollup.findMany.mockResolvedValue([
         {
+          monitorId: 'mon-1',
           bucketStart: new Date('2026-11-09T09:00:00.000Z'),
           checkCount: 10,
           upCount: 9,
           upResponseTimeSumMs: 900,
         },
         {
+          monitorId: 'mon-1',
           bucketStart: new Date('2026-11-09T09:00:00.000Z'),
           checkCount: 10,
           upCount: 10,
           upResponseTimeSumMs: 1000,
         },
         {
+          monitorId: 'mon-1',
           bucketStart: new Date('2026-11-09T08:00:00.000Z'),
           checkCount: 5,
           upCount: 5,
@@ -251,6 +254,7 @@ describe('RollupsService', () => {
     it('returns a null average when no check succeeded', async () => {
       prisma.checkRollup.findMany.mockResolvedValue([
         {
+          monitorId: 'mon-1',
           bucketStart: new Date('2026-11-09T08:00:00.000Z'),
           checkCount: 3,
           upCount: 0,

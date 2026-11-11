@@ -18,6 +18,7 @@ import { EscalationPoliciesModule } from './escalation-policies/escalation-polic
 import { NotificationChannelsModule } from './notification-channels/notification-channels.module';
 import { RollupsModule } from './rollups/rollups.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { StatusPagesModule } from './status-pages/status-pages.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
     NotificationChannelsModule,
     RollupsModule,
     DashboardModule,
+    StatusPagesModule,
   ],
   controllers: [AppController],
   providers: [

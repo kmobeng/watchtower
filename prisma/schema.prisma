@@ -57,6 +57,7 @@ model User {
   monitors            Monitor[]
   escalationPolicies  EscalationPolicy[]
   notificationChannels NotificationChannel[]
+  statusPages         StatusPage[]
 }
 
 model OutboxEvent {
@@ -218,4 +219,23 @@ model NotificationDelivery {
   @@index([incidentId])
   @@index([status, claimedAt])
   @@map("notification_deliveries")
+}
+
+model StatusPage {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Public URL segment: GET /status-pages/:slug
+  slug       String   @unique
+  // Monitors shown on the page. No FK: ownership is validated on write and
+  // re-checked on read, so a deleted monitor silently drops off the page.
+  monitorIds String[] @map("monitor_ids")
+  // Private until explicitly published.
+  isPublic   Boolean  @default(false) @map("is_public")
+  title      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("status_pages")
 }

@@ -161,6 +161,52 @@ already committed, and a reconnecting client recovers from the snapshot.
 `WS_CORS_ORIGIN` (comma-separated) controls the namespace's allowed origins and
 defaults to `*`.
 
+### Public status pages
+
+A status page publishes uptime and incident history for a chosen set of monitors
+at a guessable URL. Create one (authenticated), then embed it anywhere.
+
+```bash
+# create; the slug is normalized to lowercase
+$ curl -X POST http://localhost:3000/api/v1/status-pages \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"slug":"acme","monitorIds":["<uuid>"],"isPublic":true,"title":"Acme Status"}'
+```
+
+| Method   | Path                        | Auth | Purpose                    |
+| -------- | --------------------------- | ---- | -------------------------- |
+| `GET`    | `/api/v1/status-pages/:slug` | none | the public page            |
+| `GET`    | `/api/v1/status-pages`       | JWT  | list your pages            |
+| `POST`   | `/api/v1/status-pages`       | JWT  | create                     |
+| `PATCH`  | `/api/v1/status-pages/:id`   | JWT  | update                     |
+| `DELETE` | `/api/v1/status-pages/:id`   | JWT  | delete                     |
+
+There is intentionally no authenticated `GET /status-pages/:id`: the public read
+owns `GET /status-pages/:slug`, and two param routes at the same depth would
+collide. Use the list endpoint for editing.
+
+The public response carries, per listed monitor: its `url`, a derived `status`
+(`up`, `down` or `unknown`), the 24-hour `uptimePct` and `avgResponseTimeMs`, the
+hourly `buckets`, and the newest 10 incidents from the last 30 days. Uptime comes
+from the materialized rollups, so it covers completed hourly buckets only; the
+current `status` comes from an open incident, else the latest check, else
+`unknown` when the monitor has not been checked in 24 hours.
+
+`GET /status-pages/:slug` is the only route in the API with a CORS header
+(`Access-Control-Allow-Origin: *`, plus `Cache-Control: public, max-age=30`), so
+external sites can embed it. Every other route stays without CORS.
+
+Two details worth knowing:
+
+- An unpublished or unknown slug both return `404`, so the endpoint does not
+  reveal whether a page exists.
+- `monitorIds` is validated on write: listing a monitor you do not own is
+  rejected, since it would publish someone else's uptime. On read the list is
+  re-scoped to the page owner, so a deleted monitor silently drops off the page.
+
+The page exposes each monitor's `url` as its label, because monitors have no
+`name` field yet.
+
 ## Run tests
 
 ```bash

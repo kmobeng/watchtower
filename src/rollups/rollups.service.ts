@@ -10,12 +10,14 @@ import {
   DAY_MS,
   HOUR_MS,
   addBuckets,
+  averageResponseTime,
   bucketSizeMs,
   bucketStartsBetween,
   completedBuckets,
   toApiGranularity,
   toRollupGranularity,
   truncateToBucket,
+  uptimePercentage,
 } from './bucket';
 import {
   GetUptimeDto,
@@ -39,6 +41,15 @@ export interface UptimeBucket {
   avgResponseTimeMs: number | null;
 }
 
+/**
+ * A bucket plus the raw response-time sum, so a caller combining buckets for a
+ * window (a public status page) can derive an exact average instead of
+ * re-averaging rounded per-bucket averages.
+ */
+export interface UptimeBucketTotals extends UptimeBucket {
+  upResponseTimeSumMs: number;
+}
+
 export interface UptimeSummary {
   monitorId: string;
   granularity: 'hour' | 'day';
@@ -48,22 +59,22 @@ export interface UptimeSummary {
   buckets: UptimeBucket[];
 }
 
+/** A resolved, validated rollup window. */
+export interface UptimeWindow {
+  granularity: RollupGranularity;
+  from: Date;
+  to: Date;
+  firstBucket: Date;
+  lastBucket: Date;
+  region?: string;
+}
+
 interface BucketTotals {
   monitorId: string;
   region: string;
   checkCount: number;
   upCount: number;
   upResponseTimeSumMs: number;
-}
-
-function percentage(up: number, total: number): number | null {
-  if (total <= 0) return null;
-  return Math.round((up / total) * 10_000) / 100;
-}
-
-function average(sumMs: number, count: number): number | null {
-  if (count <= 0) return null;
-  return Math.round((sumMs / count) * 100) / 100;
 }
 
 @Injectable()
@@ -199,26 +210,14 @@ export class RollupsService {
   }
 
   /**
-   * Owner-scoped read of materialized buckets. With no region filter the
-   * per-region rows are combined by summing counters, then uptime and average
-   * response time are derived on read.
+   * Resolves a request's granularity and window, enforcing the bucket bound.
+   * Shared so owner-scoped reads and public status pages cannot drift apart.
    */
-  async getUptime(
-    userId: string,
-    monitorId: string,
-    query: GetUptimeDto,
-  ): Promise<UptimeSummary> {
-    const monitor = await this.prisma.monitor.findFirst({
-      where: { id: monitorId, userId },
-      select: { id: true },
-    });
-
-    if (!monitor) {
-      throw new NotFoundException('Monitor not found');
-    }
-
+  resolveWindow(
+    query: Pick<GetUptimeDto, 'granularity' | 'from' | 'to' | 'region'>,
+    now: Date = new Date(),
+  ): UptimeWindow {
     const granularity = toRollupGranularity(query.granularity ?? 'hour');
-    const now = new Date();
     const defaultWindowMs =
       granularity === RollupGranularity.DAY
         ? UPTIME_DEFAULT_DAYS * DAY_MS
@@ -250,16 +249,46 @@ export class RollupsService {
       );
     }
 
-    const region = query.region?.trim() || undefined;
+    return {
+      granularity,
+      from,
+      to,
+      firstBucket,
+      lastBucket,
+      region: query.region?.trim() || undefined,
+    };
+  }
+
+  /**
+   * Materialized buckets for many monitors in a single query.
+   *
+   * Deliberately takes no user id: the caller must already have established
+   * that these monitors are readable (an owner check, or a published status
+   * page). Every requested id is present in the result, empty when it has no
+   * rollups in the window.
+   */
+  async getUptimeForMonitors(
+    monitorIds: string[],
+    window: UptimeWindow,
+  ): Promise<Map<string, UptimeBucketTotals[]>> {
+    const bucketsByMonitor = new Map<string, UptimeBucketTotals[]>(
+      monitorIds.map((id) => [id, []]),
+    );
+
+    if (monitorIds.length === 0) {
+      return bucketsByMonitor;
+    }
+
     const rows = await this.prisma.checkRollup.findMany({
       where: {
-        monitorId,
-        granularity,
-        bucketStart: { gte: firstBucket, lte: lastBucket },
-        ...(region ? { region } : {}),
+        monitorId: { in: monitorIds },
+        granularity: window.granularity,
+        bucketStart: { gte: window.firstBucket, lte: window.lastBucket },
+        ...(window.region ? { region: window.region } : {}),
       },
       orderBy: { bucketStart: 'asc' },
       select: {
+        monitorId: true,
         bucketStart: true,
         checkCount: true,
         upCount: true,
@@ -267,14 +296,24 @@ export class RollupsService {
       },
     });
 
+    // Per monitor, per bucket: sum the region rows before deriving.
     const combined = new Map<
-      number,
-      { checkCount: number; upCount: number; upResponseTimeSumMs: number }
+      string,
+      Map<
+        number,
+        { checkCount: number; upCount: number; upResponseTimeSumMs: number }
+      >
     >();
 
     for (const row of rows) {
+      let byBucket = combined.get(row.monitorId);
+      if (!byBucket) {
+        byBucket = new Map();
+        combined.set(row.monitorId, byBucket);
+      }
+
       const key = row.bucketStart.getTime();
-      const totals = combined.get(key) ?? {
+      const totals = byBucket.get(key) ?? {
         checkCount: 0,
         upCount: 0,
         upResponseTimeSumMs: 0,
@@ -283,25 +322,68 @@ export class RollupsService {
       totals.checkCount += row.checkCount;
       totals.upCount += row.upCount;
       totals.upResponseTimeSumMs += row.upResponseTimeSumMs;
-      combined.set(key, totals);
+      byBucket.set(key, totals);
     }
 
-    const buckets = [...combined.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([bucketStart, totals]) => ({
-        bucketStart: new Date(bucketStart).toISOString(),
-        checkCount: totals.checkCount,
-        upCount: totals.upCount,
-        uptimePct: percentage(totals.upCount, totals.checkCount),
-        avgResponseTimeMs: average(totals.upResponseTimeSumMs, totals.upCount),
-      }));
+    for (const [monitorId, byBucket] of combined) {
+      bucketsByMonitor.set(
+        monitorId,
+        [...byBucket.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([bucketStart, totals]) => ({
+            bucketStart: new Date(bucketStart).toISOString(),
+            checkCount: totals.checkCount,
+            upCount: totals.upCount,
+            upResponseTimeSumMs: totals.upResponseTimeSumMs,
+            uptimePct: uptimePercentage(totals.upCount, totals.checkCount),
+            avgResponseTimeMs: averageResponseTime(
+              totals.upResponseTimeSumMs,
+              totals.upCount,
+            ),
+          })),
+      );
+    }
+
+    return bucketsByMonitor;
+  }
+
+  /**
+   * Owner-scoped read of materialized buckets. With no region filter the
+   * per-region rows are combined by summing counters, then uptime and average
+   * response time are derived on read.
+   */
+  async getUptime(
+    userId: string,
+    monitorId: string,
+    query: GetUptimeDto,
+  ): Promise<UptimeSummary> {
+    const monitor = await this.prisma.monitor.findFirst({
+      where: { id: monitorId, userId },
+      select: { id: true },
+    });
+
+    if (!monitor) {
+      throw new NotFoundException('Monitor not found');
+    }
+
+    const window = this.resolveWindow(query);
+    const buckets = (
+      (await this.getUptimeForMonitors([monitorId], window)).get(monitorId) ??
+      []
+    ).map((bucket) => ({
+      bucketStart: bucket.bucketStart,
+      checkCount: bucket.checkCount,
+      upCount: bucket.upCount,
+      uptimePct: bucket.uptimePct,
+      avgResponseTimeMs: bucket.avgResponseTimeMs,
+    }));
 
     return {
       monitorId,
-      granularity: toApiGranularity(granularity),
-      from: from.toISOString(),
-      to: to.toISOString(),
-      region: region ?? null,
+      granularity: toApiGranularity(window.granularity),
+      from: window.from.toISOString(),
+      to: window.to.toISOString(),
+      region: window.region ?? null,
       buckets,
     };
   }
