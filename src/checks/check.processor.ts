@@ -30,7 +30,6 @@ import { FlapDetectorService } from '../flapping/flap-detector.service';
 import { PrismaService } from '../prisma.service';
 import { MonitorState } from '../../generated/prisma/client';
 
-/** Maps the derived health label onto the persisted enum. */
 const MONITOR_STATE: Record<MonitorHealth, MonitorState> = {
   up: MonitorState.UP,
   down: MonitorState.DOWN,
@@ -212,8 +211,6 @@ export class CheckProcessor extends WorkerHost {
     // Derived cache for read paths (GET /monitors). Never fails the check.
     await this.persistState(monitor.id, deriveMonitorState(evaluation));
 
-    // Incidents own what happens next: open on 'down', resolve on 'up', and
-    // ignore 'hold'.
     await this.incidents.handleVerdict(
       monitor.id,
       { state: evaluation.verdict },

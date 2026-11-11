@@ -1,6 +1,5 @@
 import { RollupGranularity } from '../../generated/prisma/client';
 
-/** Public granularity names used by the HTTP API. */
 export type UptimeGranularity = 'hour' | 'day';
 
 export const HOUR_MS = 60 * 60 * 1000;

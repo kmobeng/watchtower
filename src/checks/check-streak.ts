@@ -6,18 +6,8 @@ export interface StreakEvaluation {
 }
 
 /**
- * Evaluates a monitor's current state from its most recent checks
- * (newest first) against the monitor's failure threshold.
- *
- * Only the LEADING failures count: a single success anywhere in the
- * window breaks the streak and recovers to 'up'.
- * The evaluation rules are:
- * - 0 leading failures            -> 'up'
- * - 1..threshold-1 leading        -> 'suspicious'
- * - >= threshold leading failures -> 'down'
- *
- * threshold = 1 means any failure is immediately 'down' (no special case).
- * An empty history means 'up' (no evidence of failure).
+ * Only the LEADING failures count: a single success breaks the streak and
+ * recovers to 'up'. An empty history means 'up' (no evidence of failure).
  */
 export function evaluateStreak(
   recent: { isUp: boolean }[],

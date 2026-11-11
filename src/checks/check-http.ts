@@ -11,10 +11,9 @@ export interface HttpCheckResult {
 }
 
 /**
- * Sends a single request and records the outcome. Never throws for
- * HTTP-level outcomes (5xx, timeouts, refused connections, DNS failures) —
- * those are data, returned as a down-classified result. Only truly
- * unexpected failures propagate.
+ * Sends one request. HTTP-level outcomes (5xx, timeouts, refused connections,
+ * DNS failures) are returned as data, never thrown; only unexpected failures
+ * propagate.
  */
 export async function runHttpCheck(
   url: string,

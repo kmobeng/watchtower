@@ -5,19 +5,12 @@ export interface CheckClassification {
 }
 
 /**
- * Classifies a single check as up or down.
+ * UP means a status below 400 arrived within the monitor's optional
+ * `responseTimeThresholdMs`. Everything else — 4xx/5xx, timeouts, refused
+ * connections, DNS failures, slow responses — is DOWN.
  *
- * UP means: an HTTP response arrived within the monitor's timeout, its status
- * is below 400 (2xx success + 3xx redirects; fetch follows redirects so 3xx is
- * rarely observed raw, but tolerated), and — when the monitor sets
- * `responseTimeThresholdMs` — it arrived within that limit.
- *
- * Everything else — 4xx/5xx, timeouts, refused connections, DNS failures (all
- * represented as statusCode null), and slow-but-successful responses — is DOWN.
- *
- * The timeout is the hard limit: a response arriving after it is aborted and
- * reported as a timeout, so `responseTimeThresholdMs` must be lower than
- * `timeoutMs` to be reachable (validated on write).
+ * `responseTimeThresholdMs` must be lower than `timeoutMs` to be reachable:
+ * the request is aborted at the timeout first.
  */
 export function classifyCheck(input: {
   statusCode: number | null;

@@ -35,14 +35,7 @@ export function freshnessWindowMs(intervalSeconds: number): number {
 }
 
 /**
- * Combines per-region streaks into one verdict.
- *
- * - `down`  when at least `quorum` fresh regions are down
- * - `up`    when at least `quorum` fresh regions are up
- * - `hold`  otherwise, including when fewer than `quorum` regions are fresh
- *
- * A region is `up`/`suspicious`/`down` by the same leading-failure streak the
- * single-region implementation used, so `failureThreshold` stays per region.
+ * `down` or `up` require `quorum` fresh regions to agree; otherwise `hold`.
  * Regions that never reported are not fresh and cannot vote.
  */
 export function evaluateQuorum(input: {
