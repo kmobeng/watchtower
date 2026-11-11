@@ -20,6 +20,9 @@ import {
   escalationDeadline,
   tryParseEscalationSteps,
 } from '../escalation-policies/escalation-steps';
+import type { EscalationStep } from '../escalation-policies/escalation-steps';
+import { IncidentEventPublisher } from './incident-event.publisher';
+import { IncidentFeedEvent, toFeedIncident } from './incident-feed.events';
 
 export const OPEN_STATUSES: IncidentStatus[] = [
   IncidentStatus.OPEN,
@@ -50,7 +53,10 @@ export interface PaginatedIncidents {
 export class IncidentService {
   private readonly logger = new Logger(IncidentService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly publisher: IncidentEventPublisher,
+  ) {}
 
   /**
    * Consumes one quorum verdict. Opens on 'down' (idempotent), resolves on
@@ -105,9 +111,16 @@ export class IncidentService {
       );
     }
 
-    return this.prisma.incident.findUniqueOrThrow({
+    const updated = await this.prisma.incident.findUniqueOrThrow({
       where: { id: incident.id },
     });
+
+    await this.publisher.publish(
+      IncidentFeedEvent.Acknowledged,
+      toFeedIncident(updated, incident.monitor.userId),
+    );
+
+    return updated;
   }
 
   async findAll(
@@ -155,14 +168,15 @@ export class IncidentService {
     });
     if (existing) return existing;
 
+    const { userId, steps } = await this.monitorContext(monitorId);
     const startedAt = new Date();
-    const nextEscalationAt = await this.firstEscalationDeadline(
-      monitorId,
-      startedAt,
-    );
+    const nextEscalationAt = steps
+      ? escalationDeadline(startedAt, steps, 0)
+      : null;
 
+    let incident: Incident;
     try {
-      const incident = await this.prisma.incident.create({
+      incident = await this.prisma.incident.create({
         data: {
           monitorId,
           status: IncidentStatus.OPEN,
@@ -172,14 +186,9 @@ export class IncidentService {
           nextEscalationAt,
         },
       });
-      this.logger.log(
-        { incidentId: incident.id, monitorId, cause: incident.cause },
-        'Incident opened',
-      );
-      return incident;
     } catch (error) {
       // Lost a concurrent open race: the partial unique index rejected us,
-      // so return the winner instead of failing.
+      // so return the winner instead of failing. The winner publishes.
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
@@ -191,6 +200,18 @@ export class IncidentService {
       }
       throw error;
     }
+
+    this.logger.log(
+      { incidentId: incident.id, monitorId, cause: incident.cause },
+      'Incident opened',
+    );
+
+    await this.publisher.publish(
+      IncidentFeedEvent.Opened,
+      toFeedIncident(incident, userId),
+    );
+
+    return incident;
   }
 
   private async resolveIfOpen(
@@ -230,6 +251,7 @@ export class IncidentService {
 
     const incident = await this.prisma.incident.findUniqueOrThrow({
       where: { id: existing.id },
+      include: { monitor: { select: { userId: true } } },
     });
     this.logger.log(
       {
@@ -239,23 +261,33 @@ export class IncidentService {
       },
       'Incident resolved',
     );
+
+    await this.publisher.publish(
+      IncidentFeedEvent.Resolved,
+      toFeedIncident(incident, incident.monitor.userId),
+    );
+
     return incident;
   }
 
-  private async firstEscalationDeadline(
-    monitorId: string,
-    startedAt: Date,
-  ): Promise<Date | null> {
+  private async monitorContext(monitorId: string): Promise<{
+    userId: string;
+    steps: EscalationStep[] | null;
+  }> {
     const monitor = await this.prisma.monitor.findUnique({
       where: { id: monitorId },
-      select: { escalationPolicy: { select: { steps: true } } },
+      select: {
+        userId: true,
+        escalationPolicy: { select: { steps: true } },
+      },
     });
 
-    const steps = monitor?.escalationPolicy
-      ? tryParseEscalationSteps(monitor.escalationPolicy.steps)
-      : null;
-
-    return steps ? escalationDeadline(startedAt, steps, 0) : null;
+    return {
+      userId: monitor?.userId ?? '',
+      steps: monitor?.escalationPolicy
+        ? tryParseEscalationSteps(monitor.escalationPolicy.steps)
+        : null,
+    };
   }
 }
 

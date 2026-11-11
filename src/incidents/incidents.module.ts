@@ -2,12 +2,13 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { OutboxModule } from '../outbox/outbox.module';
 import { PrismaService } from '../prisma.service';
+import { IncidentEventsModule } from './incident-events.module';
 import { EscalationSweepService } from './escalation-sweep.service';
 import { IncidentService } from './incident.service';
 import { IncidentsController } from './incidents.controller';
 
 @Module({
-  imports: [AuthModule, OutboxModule],
+  imports: [AuthModule, OutboxModule, IncidentEventsModule],
   controllers: [IncidentsController],
   providers: [IncidentService, EscalationSweepService, PrismaService],
   exports: [IncidentService],

@@ -132,4 +132,19 @@ describe('WsJwtGuard', () => {
     await expect(guard.canActivate(makeContext(client))).resolves.toBe(true);
     expect(client.data.user).toEqual(payload);
   });
+
+  it('authenticate() returns the payload for connection-time auth', async () => {
+    const payload = { sub: 'user-1', jti: 'jti-1' };
+    const { guard } = makeGuard({ verify: () => payload });
+    const client = makeSocket({
+      handshake: {
+        auth: { token: 'good-token' },
+        headers: {},
+        query: {},
+      },
+    });
+
+    await expect(guard.authenticate(client as never)).resolves.toEqual(payload);
+    expect(client.data.user).toEqual(payload);
+  });
 });

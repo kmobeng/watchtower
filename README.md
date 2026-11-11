@@ -118,6 +118,49 @@ $ npm run rollup:backfill -- --granularity day \
     --from 2026-01-01T00:00:00Z --to 2026-03-01T00:00:00Z
 ```
 
+### Live dashboard feed
+
+Dashboard clients subscribe to the Socket.IO namespace `/dashboard` and receive
+incident changes pushed from the API and worker processes. No polling is
+involved.
+
+```js
+import { io } from 'socket.io-client';
+
+const socket = io('http://localhost:3000/dashboard', {
+  auth: { token: accessToken }, // Bearer prefix is also accepted
+});
+```
+
+The handshake token is verified before the client joins any room; an invalid or
+missing token is disconnected immediately. A connection also closes when the
+token's `exp` passes. Each client joins `user:{sub}` and receives only its own
+incidents.
+
+On connect the server emits `dashboard:snapshot` with the authoritative open
+incident set (`OPEN`, `ACKNOWLEDGED`, `ESCALATED`). Replace the local open set
+with that snapshot, then apply the lifecycle events idempotently:
+
+| Event                   | When                                                     |
+| ----------------------- | -------------------------------------------------------- |
+| `incident:opened`       | Quorum opened an incident                                 |
+| `incident:acknowledged` | A user acknowledged it                                    |
+| `incident:escalated`    | An escalation step after the first alert fired            |
+| `incident:resolved`     | Quorum resolved it                                        |
+| `incident:updated`      | Escalation step 0 fired (status is still `OPEN`)          |
+
+Every event carries `{ event, incident, occurredAt }`. The incident payload
+includes `userId`, `status`, `cause`, `startedAt`, `acknowledgedAt`,
+`resolvedAt`, `downtimeSeconds`, `escalationStep` and `nextEscalationAt`
+(ISO-8601 strings, nullable where appropriate).
+
+The worker opens and resolves incidents, so it publishes to the Redis channel
+`dashboard:incident-events`. Every API instance subscribes and fans the message
+out to its own sockets. Publishing is best-effort: the database transition is
+already committed, and a reconnecting client recovers from the snapshot.
+`WS_CORS_ORIGIN` (comma-separated) controls the namespace's allowed origins and
+defaults to `*`.
+
 ## Run tests
 
 ```bash

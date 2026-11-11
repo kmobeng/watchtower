@@ -8,6 +8,8 @@ import {
   escalationDeadline,
   tryParseEscalationSteps,
 } from '../escalation-policies/escalation-steps';
+import { IncidentEventPublisher } from './incident-event.publisher';
+import { IncidentFeedEvent, toFeedIncident } from './incident-feed.events';
 
 type DueIncident = {
   id: string;
@@ -15,7 +17,10 @@ type DueIncident = {
   cause: string;
   startedAt: Date;
   escalationStep: number;
-  monitor: { escalationPolicy: { steps: unknown } | null };
+  monitor: {
+    userId: string;
+    escalationPolicy: { steps: unknown } | null;
+  };
 };
 
 const OPEN_STATUSES = [IncidentStatus.OPEN, IncidentStatus.ESCALATED];
@@ -28,6 +33,7 @@ export class EscalationSweepService {
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
     private readonly flaps: FlapDetectorService,
+    private readonly publisher: IncidentEventPublisher,
   ) {}
 
   @Cron('*/15 * * * * *') // Every 15 seconds for now, until we have a better idea of the load.
@@ -39,7 +45,10 @@ export class EscalationSweepService {
       },
       include: {
         monitor: {
-          select: { escalationPolicy: { select: { steps: true } } },
+          select: {
+            userId: true,
+            escalationPolicy: { select: { steps: true } },
+          },
         },
       },
       orderBy: { nextEscalationAt: 'asc' },
@@ -167,6 +176,28 @@ export class EscalationSweepService {
           nextEscalationAt: following,
         },
         'Incident escalated',
+      );
+
+      // Step 0 is the first alert and leaves the incident OPEN; later steps
+      // move it to ESCALATED. The dashboard distinguishes the two.
+      await this.publisher.publish(
+        stepIndex > 0 ? IncidentFeedEvent.Escalated : IncidentFeedEvent.Updated,
+        toFeedIncident(
+          {
+            id: incident.id,
+            monitorId: incident.monitorId,
+            status:
+              stepIndex > 0 ? IncidentStatus.ESCALATED : IncidentStatus.OPEN,
+            cause: incident.cause,
+            startedAt: incident.startedAt,
+            acknowledgedAt: null,
+            resolvedAt: null,
+            downtimeSeconds: null,
+            escalationStep: stepIndex + 1,
+            nextEscalationAt: following,
+          },
+          incident.monitor.userId,
+        ),
       );
     }
   }

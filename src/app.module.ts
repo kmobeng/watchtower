@@ -17,6 +17,7 @@ import { IncidentsModule } from './incidents/incidents.module';
 import { EscalationPoliciesModule } from './escalation-policies/escalation-policies.module';
 import { NotificationChannelsModule } from './notification-channels/notification-channels.module';
 import { RollupsModule } from './rollups/rollups.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { RollupsModule } from './rollups/rollups.module';
     EscalationPoliciesModule,
     NotificationChannelsModule,
     RollupsModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [

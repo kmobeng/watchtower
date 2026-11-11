@@ -50,6 +50,16 @@ export class WsJwtGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const client: WsClient = context.switchToWs().getClient<Socket>();
+    await this.authenticate(client);
+    return true;
+  }
+
+  /**
+   * Verifies the handshake token and attaches the payload to `client.data`.
+   * Used by `canActivate` for message handlers and directly by gateways that
+   * authenticate once at connection time.
+   */
+  async authenticate(client: Socket): Promise<AccessJWTPayload> {
     const token = this.extractToken(client);
 
     if (!token) {
@@ -92,7 +102,7 @@ export class WsJwtGuard implements CanActivate {
     client.data = client.data || {};
     client.data.user = payload;
 
-    return true;
+    return payload;
   }
 
   private extractToken(client: Socket): string | undefined {
